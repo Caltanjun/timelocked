@@ -19,23 +19,27 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive_name: timelocked-linux-x86_64
             archive_extension: tar.gz
             binary_file: timelocked
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            archive_name: timelocked-windows-x86_64
             archive_extension: zip
             binary_file: timelocked.exe
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            archive_name: timelocked-macos-intel
             archive_extension: tar.gz
             binary_file: timelocked
           - os: macos-14
             target: aarch64-apple-darwin
+            archive_name: timelocked-macos-apple-silicon
             archive_extension: tar.gz
             binary_file: timelocked
 
     env:
-      ARCHIVE_FILE: timelocked-${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}-${{ matrix.target }}.${{ matrix.archive_extension }}
+      ARCHIVE_FILE: ${{ matrix.archive_name }}.${{ matrix.archive_extension }}
 
     steps:
       - name: Check out repository

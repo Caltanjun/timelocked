@@ -66,7 +66,12 @@ This can also work for online games, social networks, etc..
 
 ## Download
 
-TODO: link
+- [Windows (x86_64)](https://github.com/Caltanjun/timelocked/releases/latest/download/timelocked-windows-x86_64.zip)
+- [macOS (Apple Silicon)](https://github.com/Caltanjun/timelocked/releases/latest/download/timelocked-macos-apple-silicon.tar.gz)
+- [macOS (Intel)](https://github.com/Caltanjun/timelocked/releases/latest/download/timelocked-macos-intel.tar.gz)
+- [Linux (x86_64)](https://github.com/Caltanjun/timelocked/releases/latest/download/timelocked-linux-x86_64.tar.gz)
+- [Checksums](https://github.com/Caltanjun/timelocked/releases/latest/download/SHA256SUMS.txt)
+- [All release assets](https://github.com/Caltanjun/timelocked/releases/latest)
 
 ## FAQ
 
