@@ -25,7 +25,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive_extension: zip
             binary_file: timelocked.exe
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive_extension: tar.gz
             binary_file: timelocked
