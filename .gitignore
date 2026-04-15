@@ -1,6 +1,6 @@
 .DS_Store
+.opencode/
 opencode.jsonc
-.opencode/package-lock.json
 .plans
 *.timelocked
 /target/
