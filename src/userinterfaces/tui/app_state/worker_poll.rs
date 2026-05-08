@@ -89,11 +89,22 @@ fn poll_unlock_worker(
 
     if let Some(result) = terminal {
         match result {
-            Ok(response) => Screen::UnlockComplete(UnlockCompleteState {
-                recovered_payload: response.recovered_payload,
-                recovered_bytes: response.recovered_bytes,
-                focus: UnlockCompleteFocus::OpenFolder,
-            }),
+            Ok(response) => {
+                let focus = match &response.recovered_payload {
+                    crate::usecases::unlock::RecoveredPayload::Text { .. } => {
+                        UnlockCompleteFocus::Done
+                    }
+                    crate::usecases::unlock::RecoveredPayload::File { .. } => {
+                        UnlockCompleteFocus::OpenFolder
+                    }
+                };
+
+                Screen::UnlockComplete(UnlockCompleteState {
+                    recovered_payload: response.recovered_payload,
+                    recovered_bytes: response.recovered_bytes,
+                    focus,
+                })
+            }
             Err(Error::Cancelled) => {
                 app.modal = Some(Modal::Info("Unlock operation cancelled.".to_string()));
                 Screen::MainMenu(MainMenuState::default())
@@ -342,6 +353,7 @@ mod tests {
         match &app.screen {
             Screen::UnlockComplete(state) => {
                 assert_eq!(state.recovered_bytes, 12);
+                assert!(matches!(state.focus, UnlockCompleteFocus::Done));
                 assert!(matches!(
                     state.recovered_payload,
                     unlock::RecoveredPayload::Text { ref text } if text == "hello future"
