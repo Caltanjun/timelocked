@@ -158,6 +158,7 @@ impl SampleTimelockedFileBuilder {
                 payload_region_params,
                 key_bytes: self.file_key,
                 timelock_material,
+                password_protection: None,
             },
             None,
             None,

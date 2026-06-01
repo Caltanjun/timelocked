@@ -144,6 +144,39 @@ pub fn wrap_file_key_with_password(
     Ok(wrapped_key)
 }
 
+pub fn wrap_file_key_with_timelock_mask(
+    file_key: &[u8; PASSWORD_WRAP_KEY_SIZE],
+    timelock_mask: &[u8; PASSWORD_WRAP_KEY_SIZE],
+) -> [u8; PASSWORD_WRAP_KEY_SIZE] {
+    xor_32(file_key, timelock_mask)
+}
+
+pub fn validate_lock_passphrase(passphrase: &SecretString) -> Result<()> {
+    if passphrase.as_bytes().is_empty() {
+        return Err(Error::InvalidArgument(
+            "password must not be empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn wrap_file_key_for_password_protected_lock(
+    file_key: &[u8; PASSWORD_WRAP_KEY_SIZE],
+    timelock_mask: &[u8; PASSWORD_WRAP_KEY_SIZE],
+    passphrase: &SecretString,
+    params: PasswordProtectionParams,
+) -> Result<(
+    [u8; PASSWORD_WRAP_KEY_SIZE],
+    super::PasswordProtectionMetadata,
+)> {
+    validate_lock_passphrase(passphrase)?;
+
+    let wrapped_key = wrap_file_key_with_password(file_key, timelock_mask, passphrase, &params)?;
+    let metadata = super::PasswordProtectionMetadata::timelock_plus_argon2id_v1(params);
+    Ok((wrapped_key, metadata))
+}
+
 pub fn unwrap_file_key_with_password(
     wrapped_key: &[u8; PASSWORD_WRAP_KEY_SIZE],
     timelock_mask: &[u8; PASSWORD_WRAP_KEY_SIZE],

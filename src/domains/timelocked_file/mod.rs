@@ -32,10 +32,12 @@ pub use header::{
 pub use lock_output_path::{default_timelocked_output_path, ensure_timelocked_extension};
 pub use output_path::resolve_available_output_path;
 pub use password_protection::{
-    derive_password_wrap_key, unwrap_file_key_with_password, wrap_file_key_with_password,
-    KeyProtectionAlgorithm, PasswordKdfAlgorithm, PasswordProtectionParams,
-    DEFAULT_ARGON2ID_ITERATIONS, DEFAULT_ARGON2ID_MEMORY_KIB, DEFAULT_ARGON2ID_PARALLELISM,
-    DEFAULT_PASSWORD_SALT_LEN, KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_ONLY,
+    derive_password_wrap_key, unwrap_file_key_with_password, validate_lock_passphrase,
+    wrap_file_key_for_password_protected_lock, wrap_file_key_with_password,
+    wrap_file_key_with_timelock_mask, KeyProtectionAlgorithm, PasswordKdfAlgorithm,
+    PasswordProtectionParams, DEFAULT_ARGON2ID_ITERATIONS, DEFAULT_ARGON2ID_MEMORY_KIB,
+    DEFAULT_ARGON2ID_PARALLELISM, DEFAULT_PASSWORD_SALT_LEN,
+    KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_ONLY,
     KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_PLUS_ARGON2ID_V1, PASSWORD_KDF_ALGORITHM_ID_ARGON2ID,
 };
 pub use payload_region::{encode_payload_region, reconstruct_payload_region, PayloadRegionLayout};
