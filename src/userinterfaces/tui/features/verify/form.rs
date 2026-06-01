@@ -131,9 +131,7 @@ pub fn render(state: &VerifyFormState, frame: &mut Frame, area: Rect, app: &App)
         app,
     )];
     let helper_text = match state.status {
-        VerifyRunState::Idle => {
-            "Checks file structure without unlocking the payload."
-        }
+        VerifyRunState::Idle => "Checks file structure without unlocking the payload.",
         VerifyRunState::Running => "Structural verification is running. You can cancel safely.",
         VerifyRunState::Cancelling => {
             "Stopping structural verification at the next safe cancellation point."

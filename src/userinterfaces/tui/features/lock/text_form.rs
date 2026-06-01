@@ -114,7 +114,7 @@ pub fn help(focus: LockTextFocus) -> &'static str {
         LockTextFocus::InputText => "Text message to lock.",
         LockTextFocus::OutputPath => "Path to the output .timelocked file.",
         LockTextFocus::TargetDelay => "Examples: 6h, 3d, 2w.",
-        LockTextFocus::HardwareProfile => {"Higher-end profiles will require more CPU work."}
+        LockTextFocus::HardwareProfile => "Higher-end profiles will require more CPU work.",
         LockTextFocus::Lock => "Start locking operation.",
         LockTextFocus::Cancel => "Back to main menu.",
     }
@@ -282,6 +282,7 @@ pub(crate) fn start_lock_text(
         current_machine_iterations_per_second,
         creator_name: None,
         creator_message: None,
+        password: None,
         verify: false,
     });
 

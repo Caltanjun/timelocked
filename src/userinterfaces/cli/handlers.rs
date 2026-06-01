@@ -80,6 +80,7 @@ fn run_lock(args: LockArgs, json_mode: bool, quiet: bool) -> anyhow::Result<()> 
                     current_machine_iterations_per_second: None,
                     creator_name,
                     creator_message,
+                    password: None,
                     verify,
                 },
                 Some(on_progress),

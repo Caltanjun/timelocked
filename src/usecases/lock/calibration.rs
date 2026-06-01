@@ -45,6 +45,7 @@ mod tests {
             current_machine_iterations_per_second: Some(77),
             creator_name: None,
             creator_message: None,
+            password: None,
             verify: false,
         };
         assert_eq!(

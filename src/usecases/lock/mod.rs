@@ -7,10 +7,10 @@ mod output_verification;
 mod payload_writer;
 mod persistence;
 
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use crate::base::progress_status::ProgressStatus;
-use crate::base::{ensure_not_cancelled, CancellationToken, Result};
+use crate::base::{ensure_not_cancelled, CancellationToken, Result, SecretString};
 use crate::domains::timelock::resolve_lock_difficulty;
 
 use calibration::resolve_current_machine_iterations_per_second;
@@ -19,7 +19,7 @@ use output_verification::verify_output_if_requested;
 use payload_writer::write_payload_artifacts;
 use persistence::persist_timelocked_container;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LockRequest {
     pub input: String,
     pub output: Option<PathBuf>,
@@ -30,7 +30,29 @@ pub struct LockRequest {
     pub current_machine_iterations_per_second: Option<u64>,
     pub creator_name: Option<String>,
     pub creator_message: Option<String>,
+    pub password: Option<SecretString>,
     pub verify: bool,
+}
+
+impl fmt::Debug for LockRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LockRequest")
+            .field("input", &self.input)
+            .field("output", &self.output)
+            .field("modulus_bits", &self.modulus_bits)
+            .field("target", &self.target)
+            .field("iterations", &self.iterations)
+            .field("hardware_profile", &self.hardware_profile)
+            .field(
+                "current_machine_iterations_per_second",
+                &self.current_machine_iterations_per_second,
+            )
+            .field("creator_name", &self.creator_name)
+            .field("creator_message", &self.creator_message)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("verify", &self.verify)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +121,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::base::{CancellationToken, Error};
+    use crate::base::{CancellationToken, Error, SecretString};
     use crate::domains::timelocked_file::parse_container;
 
     use super::{execute_with_cancel, LockRequest};
@@ -120,6 +142,7 @@ mod tests {
                 current_machine_iterations_per_second: None,
                 creator_name: Some("Marty".to_string()),
                 creator_message: Some("See you later".to_string()),
+                password: None,
                 verify: true,
             },
             None,
@@ -156,6 +179,7 @@ mod tests {
                 current_machine_iterations_per_second: None,
                 creator_name: None,
                 creator_message: None,
+                password: None,
                 verify: false,
             },
             None,
@@ -198,6 +222,7 @@ mod tests {
                 current_machine_iterations_per_second: None,
                 creator_name: None,
                 creator_message: None,
+                password: None,
                 verify: false,
             },
             Some(&mut on_progress),
@@ -210,5 +235,28 @@ mod tests {
         if out_dir.exists() {
             assert_eq!(fs::read_dir(&out_dir).expect("read dir").count(), 0);
         }
+    }
+
+    #[test]
+    fn lock_request_debug_does_not_include_password() {
+        let request = LockRequest {
+            input: "hello".to_string(),
+            output: None,
+            modulus_bits: 256,
+            target: None,
+            iterations: Some(1),
+            hardware_profile: None,
+            current_machine_iterations_per_second: None,
+            creator_name: None,
+            creator_message: None,
+            password: Some(SecretString::new("do not log me".to_string())),
+            verify: false,
+        };
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("password"));
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("do not log me"));
     }
 }

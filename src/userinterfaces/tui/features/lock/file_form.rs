@@ -347,6 +347,7 @@ pub(crate) fn start_lock_file(
         current_machine_iterations_per_second,
         creator_name: None,
         creator_message: None,
+        password: None,
         verify: false,
     });
 
