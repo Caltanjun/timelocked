@@ -7,6 +7,7 @@ mod header;
 mod lock_output_path;
 mod notice;
 mod output_path;
+mod password_protection;
 mod payload_region;
 mod protected_stream;
 mod reader;
@@ -28,6 +29,13 @@ pub use chunk_frame::{build_chunk_aad, read_chunk_frame, write_chunk_frame, Chun
 pub use header::{ChunkingParams, CipherParams, TimelockParams, TimelockedHeader};
 pub use lock_output_path::{default_timelocked_output_path, ensure_timelocked_extension};
 pub use output_path::resolve_available_output_path;
+pub use password_protection::{
+    derive_password_wrap_key, unwrap_file_key_with_password, wrap_file_key_with_password,
+    KeyProtectionAlgorithm, PasswordKdfAlgorithm, PasswordProtectionParams,
+    DEFAULT_ARGON2ID_ITERATIONS, DEFAULT_ARGON2ID_MEMORY_KIB, DEFAULT_ARGON2ID_PARALLELISM,
+    DEFAULT_PASSWORD_SALT_LEN, KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_ONLY,
+    KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_PLUS_ARGON2ID_V1, PASSWORD_KDF_ALGORITHM_ID_ARGON2ID,
+};
 pub use payload_region::{encode_payload_region, reconstruct_payload_region, PayloadRegionLayout};
 pub use protected_stream::{
     decrypt_protected_stream_to_writer, decrypt_protected_stream_to_writer_with_cancel,
