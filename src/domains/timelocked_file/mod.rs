@@ -26,7 +26,9 @@ mod tests;
 
 pub use artifact::{ParsedContainer, PayloadKind, StoredTimelockedArtifact};
 pub use chunk_frame::{build_chunk_aad, read_chunk_frame, write_chunk_frame, ChunkFrameHeader};
-pub use header::{ChunkingParams, CipherParams, TimelockParams, TimelockedHeader};
+pub use header::{
+    ChunkingParams, CipherParams, PasswordProtectionSummary, TimelockParams, TimelockedHeader,
+};
 pub use lock_output_path::{default_timelocked_output_path, ensure_timelocked_extension};
 pub use output_path::resolve_available_output_path;
 pub use password_protection::{
@@ -53,9 +55,10 @@ pub use superblock::{
     encode_end_superblock_copy, encode_start_superblock_copy, ValidatedSuperblockCopy,
 };
 pub use superblock_body::{
-    decode_superblock_body, encode_superblock_body, superblock_digest, SuperblockBody,
-    TimelockPayloadMaterial, AEAD_CIPHER_ID_XCHACHA20POLY1305, BODY_VERSION_V1,
-    RS_ALGORITHM_ID_GF256_REED_SOLOMON, TIMELOCK_ALGORITHM_ID_RSW_REPEATED_SQUARING_V1,
+    decode_superblock_body, encode_superblock_body, superblock_digest, PasswordProtectionMetadata,
+    SuperblockBody, TimelockPayloadMaterial, AEAD_CIPHER_ID_XCHACHA20POLY1305, BODY_VERSION_V1,
+    BODY_VERSION_V2, RS_ALGORITHM_ID_GF256_REED_SOLOMON,
+    TIMELOCK_ALGORITHM_ID_RSW_REPEATED_SQUARING_V1,
 };
 pub use verification::{
     verify_timelocked_file_structural, verify_timelocked_file_structural_and_cancel,

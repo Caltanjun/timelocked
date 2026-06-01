@@ -202,10 +202,10 @@ pub fn handle_key(state: &mut LockCompleteState, key: KeyEvent, app: &mut App) -
                     current_machine_iterations_per_second: app
                         .estimate_calibration_for_path(state.output_path.as_path()),
                 }) {
-                    Ok(response) => Screen::InspectDetails(InspectDetailsState {
+                    Ok(response) => Screen::InspectDetails(InspectDetailsState::new(
                         response,
-                        focus: InspectDetailsFocus::Unlock,
-                    }),
+                        InspectDetailsFocus::Unlock,
+                    )),
                     Err(err) => {
                         app.modal = Some(Modal::Error(err.to_string()));
                         Screen::LockComplete(state.clone())

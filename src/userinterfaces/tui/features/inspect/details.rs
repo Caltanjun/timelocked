@@ -19,8 +19,17 @@ use crate::userinterfaces::tui::features::unlock::form::start_unlock_from_path;
 
 #[derive(Debug, Clone)]
 pub struct InspectDetailsState {
-    pub response: inspect::InspectResponse,
+    pub response: Box<inspect::InspectResponse>,
     pub focus: InspectDetailsFocus,
+}
+
+impl InspectDetailsState {
+    pub fn new(response: inspect::InspectResponse, focus: InspectDetailsFocus) -> Self {
+        Self {
+            response: Box::new(response),
+            focus,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +65,13 @@ pub fn render(state: &InspectDetailsState, frame: &mut Frame, area: Rect, app: &
 
 fn details_lines(state: &InspectDetailsState, app: &App) -> Vec<Line<'static>> {
     let header = &state.response.header;
-    let top_width = label_width(&["File", "Format", "Created", "Content size"]);
+    let top_width = label_width(&[
+        "File",
+        "Format",
+        "Created",
+        "Content size",
+        "Password protected",
+    ]);
     let param_width = label_width(&[
         "Chosen delay",
         "Chosen hardware profile",
@@ -129,6 +144,18 @@ fn details_lines(state: &InspectDetailsState, app: &App) -> Vec<Line<'static>> {
             "Content size",
             top_width,
             &format_binary_size(header.payload_plaintext_bytes),
+            ReadOnlyValueKind::Detail,
+            app,
+        ),
+        read_only_row(
+            "",
+            "Password protected",
+            top_width,
+            if header.password_protection.password_protected {
+                "yes"
+            } else {
+                "no"
+            },
             ReadOnlyValueKind::Detail,
             app,
         ),
@@ -226,7 +253,7 @@ mod tests {
 
     use super::{details_lines, InspectDetailsFocus, InspectDetailsState};
     use crate::domains::timelocked_file::{
-        ChunkingParams, CipherParams, TimelockParams, TimelockedHeader,
+        ChunkingParams, CipherParams, PasswordProtectionSummary, TimelockParams, TimelockedHeader,
     };
     use crate::usecases::inspect::InspectResponse;
     use crate::userinterfaces::tui::app_state::App;
@@ -236,8 +263,8 @@ mod tests {
     }
 
     fn sample_state() -> InspectDetailsState {
-        InspectDetailsState {
-            response: InspectResponse {
+        InspectDetailsState::new(
+            InspectResponse {
                 path: PathBuf::from("file.timelocked"),
                 payload_len: 1234,
                 format_version: 1,
@@ -262,12 +289,21 @@ mod tests {
                         target_seconds: Some(3600),
                         hardware_profile: "high-end-cpu-2026".to_string(),
                     },
+                    password_protection: PasswordProtectionSummary {
+                        password_protected: false,
+                        key_protection_algorithm: None,
+                        password_kdf_algorithm: None,
+                        password_kdf_memory_kib: None,
+                        password_kdf_iterations: None,
+                        password_kdf_parallelism: None,
+                        password_salt_len: None,
+                    },
                 },
                 estimated_duration_on_current_machine_seconds: Some(3700),
                 estimated_duration_on_profile_seconds: None,
             },
-            focus: InspectDetailsFocus::Unlock,
-        }
+            InspectDetailsFocus::Unlock,
+        )
     }
 
     #[test]
@@ -275,8 +311,8 @@ mod tests {
         let lines = details_lines(&sample_state(), &test_app(false));
 
         assert_eq!(lines[1].spans[3].style.fg, Some(Color::Cyan));
-        assert_eq!(lines[6].spans[3].style.fg, Some(Color::Yellow));
-        assert_eq!(lines[7].spans[3].style.fg, Some(Color::Cyan));
+        assert_eq!(lines[7].spans[3].style.fg, Some(Color::Yellow));
+        assert_eq!(lines[8].spans[3].style.fg, Some(Color::Cyan));
     }
 
     #[test]

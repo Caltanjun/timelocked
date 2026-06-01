@@ -1,4 +1,4 @@
-# Timelocked binary file format (v1)
+# Timelocked binary file format (v1 and v2 superblock bodies)
 
 The format is designed around 3 separate concerns:
 
@@ -143,7 +143,7 @@ All integers are little-endian unless explicitly noted otherwise. Field order is
 
 | Field | Type | Role |
 | --- | --- | --- |
-| `body_version` | `u8` | Superblock body structure version. v1 value is `1`. |
+| `body_version` | `u8` | Superblock body structure version. v1 value is `1`; v2 value is `2`. |
 | `flags` | `u16` | Reserved for future critical behavior. v1 value is `0`. |
 | `payload_plaintext_bytes` | `u64` | Exact size of the original plaintext payload. |
 | `protected_stream_len` | `u64` | Exact byte length of the serialized encrypted chunk stream before Reed-Solomon padding. |
@@ -170,6 +170,26 @@ All integers are little-endian unless explicitly noted otherwise. Field order is
 | `base_a_bytes_be` | bytes | Timelock base `a`. |
 | `wrapped_key` | 32 bytes | File key `K` masked by the timelock result. |
 
+### v2 password-protection extension
+
+Superblock body v2 preserves the complete v1 field prefix and appends password-protection metadata after `wrapped_key`.
+
+Writers use v1 when password metadata is absent and v2 when password metadata is present. Existing v1 artifacts therefore remain byte-compatible and continue to parse without password metadata.
+
+Additional v2 fields for password-protected files:
+
+| Field | Type | Role |
+| --- | --- | --- |
+| `key_protection_algorithm_id` | `u8` | Key-protection algorithm. Value `2` means `timelock-plus-argon2id-v1`. |
+| `password_kdf_algorithm_id` | `u8` | Password KDF algorithm. Value `1` means `Argon2id`. |
+| `password_kdf_memory_kib` | `u32` | Argon2id memory cost in KiB. |
+| `password_kdf_iterations` | `u32` | Argon2id iteration count. |
+| `password_kdf_parallelism` | `u32` | Argon2id parallelism. |
+| `password_salt_len` | `u16` | Password salt byte length. MUST be greater than `0`. |
+| `password_salt` | bytes | Password KDF salt. Non-secret, authenticated metadata. |
+
+Readers MUST reject unknown `key_protection_algorithm_id` values, unknown `password_kdf_algorithm_id` values, empty password salts for protected files, and trailing bytes after the final expected field.
+
 ### Field validity rules
 
 - unknown critical `flags` bits MUST fail closed
@@ -182,6 +202,8 @@ All integers are little-endian unless explicitly noted otherwise. Field order is
 - `base_a_len` MUST be greater than `0`
 - `original_filename_utf8` MUST be valid UTF-8 if present
 - `hardware_profile_utf8` MUST be valid UTF-8 if present
+- v1 bodies MUST NOT contain password-protection metadata
+- v2 password-protected bodies MUST use `key_protection_algorithm_id = 2` and `password_kdf_algorithm_id = 1`
 
 ### Notes on superblock contents
 

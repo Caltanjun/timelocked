@@ -84,6 +84,7 @@ pub fn write_timelocked_artifact(
         original_filename: request.original_filename.clone(),
         hardware_profile: request.hardware_profile.clone(),
         timelock_material: request.timelock_material.clone(),
+        password_protection: None,
     };
 
     let digest = superblock_digest(&superblock)?;

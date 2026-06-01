@@ -1,5 +1,5 @@
 //! Authoritative superblock body encoding, decoding, and validation.
-//! Owns the authenticated metadata and timelock material for v1 artifacts.
+//! Owns the authenticated metadata and timelock material for supported artifacts.
 
 use std::io::{Cursor, Read};
 
@@ -8,7 +8,13 @@ use num_traits::identities::Zero;
 
 use crate::base::{Error, Result};
 
+use super::password_protection::{
+    KeyProtectionAlgorithm, PasswordKdfAlgorithm, PasswordProtectionParams,
+    KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_PLUS_ARGON2ID_V1, PASSWORD_KDF_ALGORITHM_ID_ARGON2ID,
+};
+
 pub const BODY_VERSION_V1: u8 = 1;
+pub const BODY_VERSION_V2: u8 = 2;
 pub const AEAD_CIPHER_ID_XCHACHA20POLY1305: u8 = 1;
 pub const RS_ALGORITHM_ID_GF256_REED_SOLOMON: u8 = 1;
 pub const TIMELOCK_ALGORITHM_ID_RSW_REPEATED_SQUARING_V1: u8 = 1;
@@ -19,6 +25,49 @@ pub struct TimelockPayloadMaterial {
     pub modulus_n: BigUint,
     pub base_a: BigUint,
     pub wrapped_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordProtectionMetadata {
+    pub key_protection_algorithm: KeyProtectionAlgorithm,
+    pub password_kdf_algorithm: PasswordKdfAlgorithm,
+    pub params: PasswordProtectionParams,
+}
+
+impl PasswordProtectionMetadata {
+    pub fn timelock_plus_argon2id_v1(params: PasswordProtectionParams) -> Self {
+        Self {
+            key_protection_algorithm: KeyProtectionAlgorithm::TimelockPlusArgon2idV1,
+            password_kdf_algorithm: PasswordKdfAlgorithm::Argon2id,
+            params,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.key_protection_algorithm != KeyProtectionAlgorithm::TimelockPlusArgon2idV1 {
+            return Err(Error::InvalidFormat(
+                "password metadata must use timelock-plus-argon2id-v1 key protection".to_string(),
+            ));
+        }
+        if self.password_kdf_algorithm != PasswordKdfAlgorithm::Argon2id {
+            return Err(Error::InvalidFormat(
+                "password metadata must use Argon2id KDF".to_string(),
+            ));
+        }
+        if self.params.salt.is_empty() {
+            return Err(Error::InvalidFormat(
+                "password_salt_len must be greater than 0".to_string(),
+            ));
+        }
+        if self.params.salt.len() > u16::MAX as usize {
+            return Err(Error::InvalidFormat(
+                "password_salt_len exceeds u16 maximum".to_string(),
+            ));
+        }
+        self.params.validate().map_err(|err| {
+            Error::InvalidFormat(format!("invalid password protection parameters: {err}"))
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,12 +91,27 @@ pub struct SuperblockBody {
     pub original_filename: Option<String>,
     pub hardware_profile: String,
     pub timelock_material: TimelockPayloadMaterial,
+    pub password_protection: Option<PasswordProtectionMetadata>,
 }
 
 impl SuperblockBody {
     pub fn validate(&self) -> Result<()> {
-        if self.body_version != BODY_VERSION_V1 {
+        if self.body_version != BODY_VERSION_V1 && self.body_version != BODY_VERSION_V2 {
             return Err(Error::UnsupportedVersion(self.body_version));
+        }
+        match (self.body_version, &self.password_protection) {
+            (BODY_VERSION_V1, Some(_)) => {
+                return Err(Error::InvalidFormat(
+                    "v1 superblock body cannot contain password metadata".to_string(),
+                ));
+            }
+            (BODY_VERSION_V2, None) => {
+                return Err(Error::InvalidFormat(
+                    "v2 superblock body requires password metadata".to_string(),
+                ));
+            }
+            (_, Some(metadata)) => metadata.validate()?,
+            _ => {}
         }
         if self.flags != 0 {
             return Err(Error::InvalidFormat(
@@ -152,6 +216,15 @@ pub fn encode_superblock_body(body: &SuperblockBody) -> Result<Vec<u8>> {
     out.extend_from_slice(&(base_a_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&base_a_bytes);
     out.extend_from_slice(&body.timelock_material.wrapped_key);
+    if let Some(password_protection) = &body.password_protection {
+        out.push(password_protection.key_protection_algorithm.stable_id());
+        out.push(password_protection.password_kdf_algorithm.stable_id());
+        out.extend_from_slice(&password_protection.params.memory_kib.to_le_bytes());
+        out.extend_from_slice(&password_protection.params.iterations.to_le_bytes());
+        out.extend_from_slice(&password_protection.params.parallelism.to_le_bytes());
+        out.extend_from_slice(&(password_protection.params.salt.len() as u16).to_le_bytes());
+        out.extend_from_slice(&password_protection.params.salt);
+    }
     Ok(out)
 }
 
@@ -210,6 +283,12 @@ pub fn decode_superblock_body(bytes: &[u8]) -> Result<SuperblockBody> {
     let mut wrapped_key = [0_u8; 32];
     cursor.read_exact(&mut wrapped_key)?;
 
+    let password_protection = match body_version {
+        BODY_VERSION_V1 => None,
+        BODY_VERSION_V2 => Some(read_password_protection_metadata(&mut cursor)?),
+        _ => return Err(Error::UnsupportedVersion(body_version)),
+    };
+
     if cursor.position() != bytes.len() as u64 {
         return Err(Error::InvalidFormat(
             "unexpected trailing bytes in superblock body".to_string(),
@@ -240,9 +319,44 @@ pub fn decode_superblock_body(bytes: &[u8]) -> Result<SuperblockBody> {
             base_a,
             wrapped_key,
         },
+        password_protection,
     };
     body.validate()?;
     Ok(body)
+}
+
+fn read_password_protection_metadata(reader: &mut impl Read) -> Result<PasswordProtectionMetadata> {
+    let key_protection_algorithm_id = read_u8(reader)?;
+    if key_protection_algorithm_id != KEY_PROTECTION_ALGORITHM_ID_TIMELOCK_PLUS_ARGON2ID_V1 {
+        return Err(Error::InvalidFormat(
+            "unknown key protection algorithm id".to_string(),
+        ));
+    }
+
+    let password_kdf_algorithm_id = read_u8(reader)?;
+    if password_kdf_algorithm_id != PASSWORD_KDF_ALGORITHM_ID_ARGON2ID {
+        return Err(Error::InvalidFormat(
+            "unknown password KDF algorithm id".to_string(),
+        ));
+    }
+
+    let memory_kib = read_u32(reader)?;
+    let iterations = read_u32(reader)?;
+    let parallelism = read_u32(reader)?;
+    let salt_len = read_u16(reader)? as usize;
+    if salt_len == 0 {
+        return Err(Error::InvalidFormat(
+            "password_salt_len must be greater than 0".to_string(),
+        ));
+    }
+    let salt = read_exact_vec(reader, salt_len)?;
+    let params = PasswordProtectionParams::new(memory_kib, iterations, parallelism, salt).map_err(
+        |err| Error::InvalidFormat(format!("invalid password protection parameters: {err}")),
+    )?;
+
+    Ok(PasswordProtectionMetadata::timelock_plus_argon2id_v1(
+        params,
+    ))
 }
 
 pub fn superblock_digest(body: &SuperblockBody) -> Result<[u8; 32]> {
@@ -328,7 +442,14 @@ mod tests {
                 base_a: BigUint::from(5_u32),
                 wrapped_key: [9_u8; 32],
             },
+            password_protection: None,
         }
+    }
+
+    fn sample_password_metadata(salt: Vec<u8>) -> PasswordProtectionMetadata {
+        PasswordProtectionMetadata::timelock_plus_argon2id_v1(
+            PasswordProtectionParams::new(8, 2, 1, salt).expect("valid params"),
+        )
     }
 
     #[test]
@@ -385,11 +506,101 @@ mod tests {
     }
 
     #[test]
-    fn superblock_body_round_trips_exactly() {
+    fn v1_superblock_round_trips_without_password_metadata() {
         let body = sample_body();
         let encoded = encode_superblock_body(&body).expect("encode");
         let decoded = decode_superblock_body(&encoded).expect("decode");
         assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn v2_password_superblock_round_trips_with_kdf_metadata() {
+        let mut body = sample_body();
+        body.body_version = BODY_VERSION_V2;
+        body.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+
+        let encoded = encode_superblock_body(&body).expect("encode");
+        let decoded = decode_superblock_body(&encoded).expect("decode");
+
+        assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn decode_v2_rejects_unknown_key_protection_algorithm() {
+        let mut body = sample_body();
+        body.body_version = BODY_VERSION_V2;
+        body.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+        let mut encoded = encode_superblock_body(&body).expect("encode");
+        let key_protection_algorithm_offset = encoded.len() - (1 + 1 + 4 + 4 + 4 + 2 + 4);
+        encoded[key_protection_algorithm_offset] = 99;
+
+        let err = decode_superblock_body(&encoded).expect_err("must fail");
+
+        assert!(matches!(err, Error::InvalidFormat(_)));
+        assert!(err
+            .to_string()
+            .contains("unknown key protection algorithm id"));
+    }
+
+    #[test]
+    fn decode_v2_rejects_unknown_password_kdf_algorithm() {
+        let mut body = sample_body();
+        body.body_version = BODY_VERSION_V2;
+        body.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+        let mut encoded = encode_superblock_body(&body).expect("encode");
+        let password_kdf_algorithm_offset = encoded.len() - (1 + 4 + 4 + 4 + 2 + 4);
+        encoded[password_kdf_algorithm_offset] = 99;
+
+        let err = decode_superblock_body(&encoded).expect_err("must fail");
+
+        assert!(matches!(err, Error::InvalidFormat(_)));
+        assert!(err
+            .to_string()
+            .contains("unknown password KDF algorithm id"));
+    }
+
+    #[test]
+    fn decode_v2_rejects_empty_password_salt() {
+        let mut body = sample_body();
+        body.body_version = BODY_VERSION_V2;
+        body.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+        let mut encoded = encode_superblock_body(&body).expect("encode");
+        let salt_len_offset = encoded.len() - (2 + 4);
+        encoded[salt_len_offset] = 0;
+        encoded[salt_len_offset + 1] = 0;
+
+        let err = decode_superblock_body(&encoded).expect_err("must fail");
+
+        assert!(matches!(err, Error::InvalidFormat(_)));
+        assert!(err.to_string().contains("password_salt_len"));
+    }
+
+    #[test]
+    fn decode_v2_rejects_trailing_bytes() {
+        let mut body = sample_body();
+        body.body_version = BODY_VERSION_V2;
+        body.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+        let mut encoded = encode_superblock_body(&body).expect("encode");
+        encoded.push(0);
+
+        let err = decode_superblock_body(&encoded).expect_err("must fail");
+
+        assert!(matches!(err, Error::InvalidFormat(_)));
+        assert!(err.to_string().contains("unexpected trailing bytes"));
+    }
+
+    #[test]
+    fn superblock_digest_changes_when_password_metadata_changes() {
+        let mut first = sample_body();
+        first.body_version = BODY_VERSION_V2;
+        first.password_protection = Some(sample_password_metadata(vec![1, 2, 3, 4]));
+        let mut second = first.clone();
+        second.password_protection = Some(sample_password_metadata(vec![4, 3, 2, 1]));
+
+        assert_ne!(
+            superblock_digest(&first).expect("first digest"),
+            superblock_digest(&second).expect("second digest")
+        );
     }
 
     #[test]
