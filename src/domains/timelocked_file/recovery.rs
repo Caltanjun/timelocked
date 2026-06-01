@@ -3,7 +3,7 @@
 use std::io::{Cursor, Write};
 use std::path::Path;
 
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::base::progress_status::ProgressStatus;
 use crate::base::{CancellationToken, Result};
@@ -22,11 +22,12 @@ pub struct RecoverFileKeyRequest<'a> {
     pub modulus_bits: u16,
 }
 
-pub type RecoverFileKeyFn = dyn FnMut(
-    RecoverFileKeyRequest<'_>,
-    Option<&mut dyn FnMut(ProgressStatus)>,
-    Option<&CancellationToken>,
-) -> Result<[u8; 32]>;
+pub type RecoverFileKeyFn<'a> = dyn FnMut(
+        RecoverFileKeyRequest<'_>,
+        Option<&mut dyn FnMut(ProgressStatus)>,
+        Option<&CancellationToken>,
+    ) -> Result<[u8; 32]>
+    + 'a;
 
 pub fn recover_protected_stream_to_writer_with_cancel(
     path: &Path,
@@ -54,7 +55,7 @@ pub fn recover_payload_to_writer_with_cancel(
     path: &Path,
     parsed: &ParsedContainer,
     writer: &mut impl Write,
-    recover_file_key: &mut RecoverFileKeyFn,
+    recover_file_key: &mut RecoverFileKeyFn<'_>,
     mut on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
     cancellation: Option<&CancellationToken>,
 ) -> Result<ChunkDecryptionStats> {
@@ -63,11 +64,12 @@ pub fn recover_payload_to_writer_with_cancel(
         iterations: parsed.superblock.iterations,
         modulus_bits: parsed.superblock.modulus_bits,
     };
-    let mut key = if let Some(progress) = on_progress.as_mut() {
+    let key = if let Some(progress) = on_progress.as_mut() {
         recover_file_key(recover_request, Some(&mut **progress), cancellation)?
     } else {
         recover_file_key(recover_request, None, cancellation)?
     };
+    let key = Zeroizing::new(key);
 
     let payload_region = read_payload_region_bytes(path, parsed)?;
     let protected_stream = reconstruct_payload_region(
@@ -104,6 +106,5 @@ pub fn recover_payload_to_writer_with_cancel(
             cancellation,
         )
     };
-    key.zeroize();
     decrypt_result
 }

@@ -7,12 +7,19 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 use crate::base::progress_status::ProgressStatus;
-use crate::base::{ensure_not_cancelled, CancellationToken, Error, Result};
-use crate::domains::timelock::{unwrap_key_with_cancel, TimelockPuzzleMaterial};
+use zeroize::Zeroize;
+
+use crate::base::{ensure_not_cancelled, CancellationToken, Error, Result, SecretString};
+use crate::domains::timelock::{
+    solve_puzzle_mask_with_cancel, unwrap_key_with_cancel, TimelockPuzzleMaterial,
+};
 use crate::domains::timelocked_file::{
     parse_container, recover_payload_to_writer_with_cancel, resolve_available_output_path,
-    PayloadKind, RecoverFileKeyRequest,
+    unwrap_file_key_with_password, PasswordProtectionMetadata, PayloadKind, RecoverFileKeyFn,
+    RecoverFileKeyRequest,
 };
+
+pub const MAX_PASSWORD_ATTEMPTS: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct UnlockRequest {
@@ -32,6 +39,16 @@ pub enum RecoveredPayload {
     File { path: PathBuf },
     Text { text: String },
 }
+
+#[derive(Debug, Clone)]
+pub struct PasswordPromptContext {
+    pub input: PathBuf,
+    pub attempt: u8,
+    pub max_attempts: u8,
+    pub previous_attempt_failed: bool,
+}
+
+pub type PasswordProvider = dyn FnMut(PasswordPromptContext) -> Result<SecretString>;
 
 fn recover_file_key_from_timelock(
     request: RecoverFileKeyRequest<'_>,
@@ -61,6 +78,15 @@ pub fn execute_with_cancel(
     on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
     cancellation: Option<&CancellationToken>,
 ) -> Result<UnlockResponse> {
+    execute_with_cancel_and_password_provider(request, on_progress, cancellation, None)
+}
+
+pub fn execute_with_cancel_and_password_provider(
+    request: UnlockRequest,
+    on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
+    cancellation: Option<&CancellationToken>,
+    mut password_provider: Option<&mut PasswordProvider>,
+) -> Result<UnlockResponse> {
     ensure_not_cancelled(cancellation)?;
 
     let mut noop_progress = |_event: ProgressStatus| {};
@@ -75,16 +101,106 @@ pub fn execute_with_cancel(
         .map(|path| resolve_available_output_path(&path))
         .transpose()?;
 
-    let mut recover_file_key = recover_file_key_from_timelock;
+    let password_protection = parsed.superblock.password_protection.clone();
 
+    if password_protection.is_none() {
+        let mut recover_file_key = recover_file_key_from_timelock;
+        return recover_payload_once(
+            &request,
+            &parsed,
+            payload_kind,
+            recovered_file_path,
+            &mut recover_file_key,
+            progress_cb,
+            cancellation,
+        );
+    }
+
+    let password_protection = password_protection.expect("checked protected metadata");
+    let mut cached_timelock_mask: Option<[u8; 32]> = None;
+    let mut previous_attempt_failed = false;
+
+    for attempt in 1..=MAX_PASSWORD_ATTEMPTS {
+        let input = request.input.clone();
+        let password_protection = password_protection.clone();
+        let mut recover_file_key = |recover_request: RecoverFileKeyRequest<'_>,
+                                    on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
+                                    cancellation: Option<&CancellationToken>|
+         -> Result<[u8; 32]> {
+            recover_password_protected_file_key(
+                recover_request,
+                &password_protection,
+                &mut cached_timelock_mask,
+                on_progress,
+                cancellation,
+                password_provider.as_deref_mut(),
+                PasswordPromptContext {
+                    input: input.clone(),
+                    attempt,
+                    max_attempts: MAX_PASSWORD_ATTEMPTS,
+                    previous_attempt_failed,
+                },
+            )
+        };
+
+        match recover_payload_once(
+            &request,
+            &parsed,
+            payload_kind.clone(),
+            recovered_file_path.clone(),
+            &mut recover_file_key,
+            progress_cb,
+            cancellation,
+        ) {
+            Ok(response) => {
+                if let Some(mask) = cached_timelock_mask.as_mut() {
+                    mask.zeroize();
+                }
+                return Ok(response);
+            }
+            Err(err)
+                if is_payload_authentication_error(&err) && attempt < MAX_PASSWORD_ATTEMPTS =>
+            {
+                previous_attempt_failed = true;
+            }
+            Err(err) if is_payload_authentication_error(&err) => {
+                if let Some(mask) = cached_timelock_mask.as_mut() {
+                    mask.zeroize();
+                }
+                return Err(password_payload_authentication_error());
+            }
+            Err(err) => {
+                if let Some(mask) = cached_timelock_mask.as_mut() {
+                    mask.zeroize();
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    if let Some(mask) = cached_timelock_mask.as_mut() {
+        mask.zeroize();
+    }
+    Err(password_payload_authentication_error())
+}
+
+fn recover_payload_once(
+    request: &UnlockRequest,
+    parsed: &crate::domains::timelocked_file::ParsedContainer,
+    payload_kind: PayloadKind,
+    recovered_file_path: Option<PathBuf>,
+    recover_file_key: &mut RecoverFileKeyFn<'_>,
+    progress_cb: &mut dyn FnMut(ProgressStatus),
+    cancellation: Option<&CancellationToken>,
+) -> Result<UnlockResponse> {
     match payload_kind {
         PayloadKind::Text => {
             let mut text_bytes = Vec::new();
             let stats = recover_payload_to_writer_with_cancel(
                 &request.input,
-                &parsed,
+                parsed,
                 &mut text_bytes,
-                &mut recover_file_key,
+                recover_file_key,
                 Some(&mut *progress_cb),
                 cancellation,
             )?;
@@ -112,9 +228,9 @@ pub fn execute_with_cancel(
                 let mut out_writer = BufWriter::new(out_temp.as_file_mut());
                 let stats = recover_payload_to_writer_with_cancel(
                     &request.input,
-                    &parsed,
+                    parsed,
                     &mut out_writer,
-                    &mut recover_file_key,
+                    recover_file_key,
                     Some(&mut *progress_cb),
                     cancellation,
                 )?;
@@ -134,6 +250,52 @@ pub fn execute_with_cancel(
             })
         }
     }
+}
+
+fn recover_password_protected_file_key(
+    request: RecoverFileKeyRequest<'_>,
+    password_protection: &PasswordProtectionMetadata,
+    cached_timelock_mask: &mut Option<[u8; 32]>,
+    on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
+    cancellation: Option<&CancellationToken>,
+    password_provider: Option<&mut PasswordProvider>,
+    prompt_context: PasswordPromptContext,
+) -> Result<[u8; 32]> {
+    if cached_timelock_mask.is_none() {
+        let puzzle = TimelockPuzzleMaterial {
+            modulus_n: request.material.modulus_n.clone(),
+            base_a: request.material.base_a.clone(),
+            wrapped_key: request.material.wrapped_key,
+            iterations: request.iterations,
+            modulus_bits: request.modulus_bits,
+        };
+        *cached_timelock_mask = Some(solve_puzzle_mask_with_cancel(
+            &puzzle,
+            on_progress,
+            cancellation,
+        )?);
+    }
+
+    let provider = password_provider.ok_or_else(|| {
+        Error::InvalidArgument("password required to unlock this file".to_string())
+    })?;
+    let mut passphrase = provider(prompt_context)?;
+    let file_key = unwrap_file_key_with_password(
+        &request.material.wrapped_key,
+        cached_timelock_mask.as_ref().expect("timelock mask solved"),
+        &passphrase,
+        &password_protection.params,
+    );
+    passphrase.clear();
+    file_key
+}
+
+fn is_payload_authentication_error(err: &Error) -> bool {
+    matches!(err, Error::Crypto(message) if message.contains("payload authentication failed"))
+}
+
+fn password_payload_authentication_error() -> Error {
+    Error::Crypto("payload authentication failed (wrong password or file is corrupted)".to_string())
 }
 
 fn resolve_recovered_file_path(
@@ -169,19 +331,23 @@ fn resolve_recovered_file_path(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
     use std::fs;
+    use std::rc::Rc;
 
     use tempfile::tempdir;
 
-    use crate::base::Result;
+    use crate::base::{Result, SecretString};
     use crate::domains::timelock::create_puzzle_and_wrap_key;
+    use crate::domains::timelocked_file::PasswordProtectionParams;
     use crate::domains::timelocked_file::PayloadKind;
     use crate::domains::timelocked_file::{
         test_support::SampleTimelockedFileBuilder, TimelockPayloadMaterial,
     };
 
     use super::{
-        execute, execute_with_cancel, resolve_recovered_file_path, RecoveredPayload, UnlockRequest,
+        execute, execute_with_cancel, execute_with_cancel_and_password_provider,
+        resolve_recovered_file_path, PasswordPromptContext, RecoveredPayload, UnlockRequest,
     };
     use crate::base::{CancellationToken, Error};
 
@@ -198,6 +364,26 @@ mod tests {
                 base_a: puzzle.base_a,
                 wrapped_key: puzzle.wrapped_key,
             }))
+    }
+
+    fn protected_timelocked_file_builder(
+        plaintext: impl AsRef<[u8]>,
+    ) -> Result<SampleTimelockedFileBuilder> {
+        Ok(sample_timelocked_file_builder(plaintext)?
+            .password_protection(correct_passphrase(), test_password_params()))
+    }
+
+    fn correct_passphrase() -> SecretString {
+        SecretString::new("correct horse battery staple".to_string())
+    }
+
+    fn wrong_passphrase() -> SecretString {
+        SecretString::new("wrong password".to_string())
+    }
+
+    fn test_password_params() -> PasswordProtectionParams {
+        PasswordProtectionParams::new(8, 1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .expect("test password params")
     }
 
     #[test]
@@ -348,6 +534,333 @@ mod tests {
 
         assert_eq!(entries, vec![output_path.clone()]);
         assert_eq!(fs::read(output_path).expect("read output"), b"persist me");
+    }
+
+    #[test]
+    fn unlock_unprotected_v1_does_not_request_password() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        sample_timelocked_file_builder(b"hello future")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let prompt_count = Rc::new(Cell::new(0));
+        let provider_prompt_count = Rc::clone(&prompt_count);
+        let mut provider = move |_context: PasswordPromptContext| {
+            provider_prompt_count.set(provider_prompt_count.get() + 1);
+            Ok(correct_passphrase())
+        };
+
+        let response = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock unprotected");
+
+        assert_eq!(prompt_count.get(), 0);
+        assert!(
+            matches!(response.recovered_payload, RecoveredPayload::Text { ref text } if text == "hello future")
+        );
+    }
+
+    #[test]
+    fn unlock_protected_requests_password_after_timelock_progress() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"hello")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let timelock_progress_count = Rc::new(Cell::new(0));
+        let progress_timelock_count = Rc::clone(&timelock_progress_count);
+        let saw_timelock_before_prompt = Rc::new(Cell::new(false));
+        let provider_saw_timelock = Rc::clone(&saw_timelock_before_prompt);
+        let provider_timelock_count = Rc::clone(&timelock_progress_count);
+        let mut on_progress = move |status: crate::base::progress_status::ProgressStatus| {
+            if status.phase == "unlock-timelock" {
+                progress_timelock_count.set(progress_timelock_count.get() + 1);
+            }
+        };
+        let mut provider = move |_context: PasswordPromptContext| {
+            provider_saw_timelock.set(provider_timelock_count.get() > 0);
+            Ok(correct_passphrase())
+        };
+
+        execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            Some(&mut on_progress),
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock protected");
+
+        assert!(saw_timelock_before_prompt.get());
+    }
+
+    #[test]
+    fn unlock_protected_with_correct_password_recovers_text_payload() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"protected text")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let mut provider = |_context: PasswordPromptContext| Ok(correct_passphrase());
+
+        let response = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock protected text");
+
+        assert!(
+            matches!(response.recovered_payload, RecoveredPayload::Text { ref text } if text == "protected text")
+        );
+    }
+
+    #[test]
+    fn unlock_protected_with_correct_password_recovers_file_payload() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("note.timelocked");
+        protected_timelocked_file_builder(b"protected file")
+            .expect("builder")
+            .original_filename("note.txt")
+            .write_to(&container)
+            .expect("container");
+        let mut provider = |_context: PasswordPromptContext| Ok(correct_passphrase());
+
+        let response = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock protected file");
+
+        match response.recovered_payload {
+            RecoveredPayload::File { path } => {
+                assert_eq!(fs::read(path).expect("read recovered"), b"protected file");
+            }
+            other => panic!("expected file output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unlock_protected_reprompts_after_wrong_password_without_resolving_timelock() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"protected")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let timelock_progress_count = Rc::new(Cell::new(0));
+        let progress_timelock_count = Rc::clone(&timelock_progress_count);
+        let mut on_progress = move |status: crate::base::progress_status::ProgressStatus| {
+            if status.phase == "unlock-timelock" {
+                progress_timelock_count.set(progress_timelock_count.get() + 1);
+            }
+        };
+        let prompts = Rc::new(RefCell::new(vec![correct_passphrase(), wrong_passphrase()]));
+        let attempts = Rc::new(RefCell::new(Vec::new()));
+        let provider_prompts = Rc::clone(&prompts);
+        let provider_attempts = Rc::clone(&attempts);
+        let mut provider = move |context: PasswordPromptContext| {
+            provider_attempts
+                .borrow_mut()
+                .push((context.attempt, context.previous_attempt_failed));
+            Ok(provider_prompts.borrow_mut().pop().expect("prompt value"))
+        };
+
+        execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            Some(&mut on_progress),
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock after retry");
+
+        assert_eq!(*attempts.borrow(), vec![(1, false), (2, true)]);
+        assert_eq!(timelock_progress_count.get(), 1);
+    }
+
+    #[test]
+    fn unlock_protected_with_wrong_then_correct_password_recovers_payload() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"retry success")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let prompts = Rc::new(RefCell::new(vec![correct_passphrase(), wrong_passphrase()]));
+        let provider_prompts = Rc::clone(&prompts);
+        let mut provider = move |_context: PasswordPromptContext| {
+            Ok(provider_prompts.borrow_mut().pop().expect("prompt"))
+        };
+
+        let response = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock after wrong password");
+
+        assert!(
+            matches!(response.recovered_payload, RecoveredPayload::Text { ref text } if text == "retry success")
+        );
+    }
+
+    #[test]
+    fn unlock_protected_fails_after_three_wrong_password_attempts() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"protected")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let prompt_count = Rc::new(Cell::new(0));
+        let provider_prompt_count = Rc::clone(&prompt_count);
+        let mut provider = move |_context: PasswordPromptContext| {
+            provider_prompt_count.set(provider_prompt_count.get() + 1);
+            Ok(wrong_passphrase())
+        };
+
+        let err = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect_err("wrong passwords fail");
+
+        assert_eq!(prompt_count.get(), 3);
+        assert!(matches!(err, Error::Crypto(_)));
+        assert!(err
+            .to_string()
+            .contains("wrong password or file is corrupted"));
+    }
+
+    #[test]
+    fn unlock_protected_without_password_provider_returns_password_required() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"protected")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+
+        let err = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            None,
+        )
+        .expect_err("missing password provider");
+
+        assert!(matches!(err, Error::InvalidArgument(_)));
+        assert!(err.to_string().contains("password required"));
+    }
+
+    #[test]
+    fn unlock_protected_password_provider_cancel_returns_cancelled() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("message.timelocked");
+        protected_timelocked_file_builder(b"protected")
+            .expect("builder")
+            .write_to(&container)
+            .expect("container");
+        let mut provider = |_context: PasswordPromptContext| Err(Error::Cancelled);
+
+        let err = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect_err("provider cancellation");
+
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn unlock_output_suffixing_still_works_for_protected_file_payloads() {
+        let dir = tempdir().expect("tempdir");
+        let container = dir.path().join("note.timelocked");
+        let existing_output = dir.path().join("note.txt");
+        fs::write(&existing_output, b"existing").expect("write existing output");
+        protected_timelocked_file_builder(b"protected recovered")
+            .expect("builder")
+            .original_filename("note.txt")
+            .write_to(&container)
+            .expect("container");
+        let mut provider = |_context: PasswordPromptContext| Ok(correct_passphrase());
+
+        let response = execute_with_cancel_and_password_provider(
+            UnlockRequest {
+                input: container,
+                out_dir: None,
+                out: None,
+            },
+            None,
+            None,
+            Some(&mut provider),
+        )
+        .expect("unlock protected file");
+
+        match response.recovered_payload {
+            RecoveredPayload::File { path } => {
+                assert_eq!(path, dir.path().join("note.1.txt"));
+                assert_eq!(
+                    fs::read(existing_output).expect("read existing"),
+                    b"existing"
+                );
+                assert_eq!(
+                    fs::read(path).expect("read recovered"),
+                    b"protected recovered"
+                );
+            }
+            other => panic!("expected file output, got {other:?}"),
+        }
     }
 
     #[test]

@@ -49,7 +49,7 @@ pub use protected_stream::{
 pub use reader::{parse_container, read_timelocked_artifact};
 pub use recovery::{
     recover_payload_to_writer_with_cancel, recover_protected_stream_to_writer_with_cancel,
-    RecoverFileKeyRequest,
+    RecoverFileKeyFn, RecoverFileKeyRequest,
 };
 pub use shard_record::{decode_shard_record, encode_shard_record};
 pub use superblock::{
