@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone)]
 pub struct TextField {
@@ -22,6 +23,12 @@ impl TextField {
         if !self.value.is_empty() {
             self.clear_on_next_edit = true;
         }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.value.zeroize();
+        self.cursor = 0;
+        self.clear_on_next_edit = false;
     }
 
     pub fn apply_key(&mut self, key: KeyEvent) -> bool {
@@ -71,18 +78,21 @@ impl TextField {
 
     fn consume_clear_on_next_edit(&mut self) {
         if self.clear_on_next_edit {
-            self.value.clear();
-            self.cursor = 0;
-            self.clear_on_next_edit = false;
+            self.clear();
         }
+    }
+
+    fn replace_value(&mut self, value: String, cursor: usize) {
+        self.value.zeroize();
+        self.value = value;
+        self.cursor = cursor;
     }
 
     fn insert(&mut self, c: char) {
         let mut chars: Vec<char> = self.value.chars().collect();
         let idx = self.cursor.min(chars.len());
         chars.insert(idx, c);
-        self.value = chars.into_iter().collect();
-        self.cursor = idx + 1;
+        self.replace_value(chars.into_iter().collect(), idx + 1);
     }
 
     fn backspace(&mut self) {
@@ -93,8 +103,7 @@ impl TextField {
         let idx = self.cursor - 1;
         if idx < chars.len() {
             chars.remove(idx);
-            self.value = chars.into_iter().collect();
-            self.cursor = idx;
+            self.replace_value(chars.into_iter().collect(), idx);
         }
     }
 
@@ -102,7 +111,7 @@ impl TextField {
         let mut chars: Vec<char> = self.value.chars().collect();
         if self.cursor < chars.len() {
             chars.remove(self.cursor);
-            self.value = chars.into_iter().collect();
+            self.replace_value(chars.into_iter().collect(), self.cursor);
         }
     }
 

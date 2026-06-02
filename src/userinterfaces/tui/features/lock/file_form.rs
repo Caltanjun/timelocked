@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
+use crate::base::SecretString;
 use crate::configuration::runtime::lock_modulus_bits;
 use crate::domains::timelock::{
     all_profiles, is_current_machine_profile_id, CURRENT_MACHINE_PROFILE_ID,
@@ -15,8 +16,8 @@ use crate::domains::timelocked_file::ensure_timelocked_extension;
 use crate::usecases::lock;
 use crate::userinterfaces::tui::app_state::{App, BrowserMode, BrowserTarget, Modal, Screen};
 use crate::userinterfaces::tui::components::form::{
-    button_span, helper_line, label_width, line_with_field, line_with_field_and_button, ActionKind,
-    FieldChrome, InlineButton,
+    button_span, helper_line, label_width, line_with_field, line_with_field_and_button,
+    line_with_secret_field, ActionKind, FieldChrome, InlineButton,
 };
 use crate::userinterfaces::tui::components::layout::render_block_paragraph;
 use crate::userinterfaces::tui::features::main_menu::screen::MainMenuState;
@@ -24,7 +25,7 @@ use crate::userinterfaces::tui::features::shared::form_navigation::{
     cycled_focus, FocusNavigationAxis,
 };
 use crate::userinterfaces::tui::features::shared::progress_screens::new_lock_progress_screen;
-use crate::userinterfaces::tui::state::TextField;
+use crate::userinterfaces::tui::state::{SecretTextField, TextField};
 use crate::userinterfaces::tui::worker::spawn_lock_worker;
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,8 @@ pub struct LockFileFormState {
     pub input_path: TextField,
     pub output_path: TextField,
     pub target_delay: TextField,
+    pub password: SecretTextField,
+    pub password_confirmation: SecretTextField,
     pub profile_index: usize,
     pub output_touched: bool,
     pub focus: LockFileFocus,
@@ -43,6 +46,8 @@ pub enum LockFileFocus {
     BrowseInput,
     OutputPath,
     TargetDelay,
+    Password,
+    ConfirmPassword,
     HardwareProfile,
     Lock,
     Cancel,
@@ -54,6 +59,8 @@ impl Default for LockFileFormState {
             input_path: TextField::new(String::new()),
             output_path: TextField::new(String::new()),
             target_delay: TextField::new("3d".to_string()),
+            password: SecretTextField::default(),
+            password_confirmation: SecretTextField::default(),
             profile_index: default_profile_index(),
             output_touched: false,
             focus: LockFileFocus::InputPath,
@@ -69,6 +76,8 @@ impl LockFileFormState {
             LockFileFocus::InputPath => self.input_path.arm_clear_on_next_edit(),
             LockFileFocus::OutputPath => self.output_path.arm_clear_on_next_edit(),
             LockFileFocus::TargetDelay => self.target_delay.arm_clear_on_next_edit(),
+            LockFileFocus::Password => self.password.arm_clear_on_next_edit(),
+            LockFileFocus::ConfirmPassword => self.password_confirmation.arm_clear_on_next_edit(),
             _ => {}
         }
     }
@@ -92,7 +101,9 @@ impl LockFileFocus {
             Self::InputPath => Self::BrowseInput,
             Self::BrowseInput => Self::OutputPath,
             Self::OutputPath => Self::TargetDelay,
-            Self::TargetDelay => Self::HardwareProfile,
+            Self::TargetDelay => Self::Password,
+            Self::Password => Self::ConfirmPassword,
+            Self::ConfirmPassword => Self::HardwareProfile,
             Self::HardwareProfile => Self::Lock,
             Self::Lock => Self::Cancel,
             Self::Cancel => Self::InputPath,
@@ -105,7 +116,9 @@ impl LockFileFocus {
             Self::BrowseInput => Self::InputPath,
             Self::OutputPath => Self::BrowseInput,
             Self::TargetDelay => Self::OutputPath,
-            Self::HardwareProfile => Self::TargetDelay,
+            Self::Password => Self::TargetDelay,
+            Self::ConfirmPassword => Self::Password,
+            Self::HardwareProfile => Self::ConfirmPassword,
             Self::Lock => Self::HardwareProfile,
             Self::Cancel => Self::Lock,
         }
@@ -125,6 +138,8 @@ pub fn help(focus: LockFileFocus) -> &'static str {
         LockFileFocus::BrowseInput => "Open file browser.",
         LockFileFocus::OutputPath => "Default is <input>.timelocked.",
         LockFileFocus::TargetDelay => "Examples: 6h, 3d, 2w.",
+        LockFileFocus::Password => "Optional password. Leave empty for no password protection.",
+        LockFileFocus::ConfirmPassword => "Re-enter the optional password exactly.",
         LockFileFocus::HardwareProfile => {
             "Profile converts delay into iterations. Current machine calibrates once per session."
         }
@@ -172,6 +187,8 @@ pub fn render(state: &LockFileFormState, frame: &mut Frame, area: Rect, app: &Ap
         "Input file",
         "Output file",
         "Target delay",
+        "Password",
+        "Confirm password",
         "Hardware profile",
     ]));
     let lines = vec![
@@ -205,6 +222,25 @@ pub fn render(state: &LockFileFormState, frame: &mut Frame, area: Rect, app: &Ap
             app,
         ),
         helper_line("Examples: 6h, 3d, 2w.", label_width, app),
+        line_with_secret_field(
+            "Password",
+            label_width,
+            state.password.secret_char_count(),
+            matches!(state.focus, LockFileFocus::Password),
+            app,
+        ),
+        helper_line(
+            "Optional. Leave empty for no password protection.",
+            label_width,
+            app,
+        ),
+        line_with_secret_field(
+            "Confirm password",
+            label_width,
+            state.password_confirmation.secret_char_count(),
+            matches!(state.focus, LockFileFocus::ConfirmPassword),
+            app,
+        ),
         line_with_field(
             "Hardware profile",
             label_width,
@@ -277,6 +313,14 @@ pub fn handle_key(state: &mut LockFileFormState, key: KeyEvent, app: &mut App) -
             state.target_delay.apply_key(key);
             Screen::LockFileForm(state.clone())
         }
+        LockFileFocus::Password => {
+            state.password.apply_key(key);
+            Screen::LockFileForm(state.clone())
+        }
+        LockFileFocus::ConfirmPassword => {
+            state.password_confirmation.apply_key(key);
+            Screen::LockFileForm(state.clone())
+        }
         LockFileFocus::HardwareProfile => {
             if key.code == KeyCode::Left {
                 state.profile_prev();
@@ -310,8 +354,32 @@ pub fn handle_key(state: &mut LockFileFormState, key: KeyEvent, app: &mut App) -
 
 pub(crate) fn start_lock_file(
     app: &mut App,
-    state: &LockFileFormState,
+    state: &mut LockFileFormState,
 ) -> std::result::Result<Screen, String> {
+    let request = build_lock_file_request(app, state)?;
+    let input_display = request.input.clone();
+    let output_display = request
+        .output
+        .as_ref()
+        .expect("file lock requests always include output")
+        .to_string_lossy()
+        .into_owned();
+
+    let worker = spawn_lock_worker(request);
+    state.password.clear();
+    state.password_confirmation.clear();
+
+    Ok(new_lock_progress_screen(
+        input_display,
+        output_display,
+        worker,
+    ))
+}
+
+pub(crate) fn build_lock_file_request(
+    app: &mut App,
+    state: &LockFileFormState,
+) -> std::result::Result<lock::LockRequest, String> {
     let input = state.input_path.value.trim();
     if input.is_empty() {
         return Err("Input file is required.".to_string());
@@ -327,6 +395,8 @@ pub(crate) fn start_lock_file(
         return Err("Target delay is required (examples: 6h, 3d, 2w).".to_string());
     }
 
+    let password = password_from_fields(&state.password, &state.password_confirmation)?;
+
     let profile = profile_id_for_index(state.profile_index).to_string();
     let current_machine_iterations_per_second = if is_current_machine_profile_id(&profile) {
         Some(
@@ -337,7 +407,7 @@ pub(crate) fn start_lock_file(
         None
     };
 
-    let worker = spawn_lock_worker(lock::LockRequest {
+    Ok(lock::LockRequest {
         input: input.to_string(),
         output: Some(PathBuf::from(output)),
         modulus_bits: lock_modulus_bits(),
@@ -347,29 +417,56 @@ pub(crate) fn start_lock_file(
         current_machine_iterations_per_second,
         creator_name: None,
         creator_message: None,
-        password: None,
+        password,
         verify: false,
-    });
+    })
+}
 
-    Ok(new_lock_progress_screen(
-        input.to_string(),
-        output.to_string(),
-        worker,
-    ))
+pub(crate) fn password_from_fields(
+    password: &SecretTextField,
+    confirmation: &SecretTextField,
+) -> std::result::Result<Option<SecretString>, String> {
+    if password.expose_secret() != confirmation.expose_secret() {
+        return Err("Password and confirmation do not match.".to_string());
+    }
+
+    if password.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(SecretString::new(
+            password.expose_secret().to_string(),
+        )))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
 
     use super::{
-        derive_default_output, handle_key, profile_id_for_index, profile_option_count,
-        LockFileFocus, LockFileFormState,
+        build_lock_file_request, derive_default_output, handle_key, password_from_fields,
+        profile_id_for_index, profile_option_count, render, LockFileFocus, LockFileFormState,
     };
-    use crate::userinterfaces::tui::app_state::{App, Screen};
+    use crate::userinterfaces::tui::app_state::{App, Modal, Screen};
+    use crate::userinterfaces::tui::state::{SecretTextField, TextField};
 
     fn test_app() -> App {
         App::new(false)
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -447,7 +544,7 @@ mod tests {
         );
         match screen {
             Screen::LockFileForm(updated) => {
-                assert!(matches!(updated.focus, LockFileFocus::TargetDelay));
+                assert!(matches!(updated.focus, LockFileFocus::ConfirmPassword));
                 assert_eq!(updated.profile_index, 1);
             }
             _ => panic!("expected lock file form"),
@@ -479,5 +576,82 @@ mod tests {
     fn derive_default_output_returns_empty_for_empty_input() {
         assert_eq!(derive_default_output(""), "");
         assert_eq!(derive_default_output("   "), "");
+    }
+
+    #[test]
+    fn lock_file_form_masks_password_value() {
+        let app = test_app();
+        let state = LockFileFormState {
+            password: SecretTextField::new("open sesame".to_string()),
+            password_confirmation: SecretTextField::new("open sesame".to_string()),
+            ..LockFileFormState::default()
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+
+        terminal
+            .draw(|frame| render(&state, frame, frame.area(), &app))
+            .expect("lock file form should render");
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(!rendered.contains("open sesame"));
+        assert!(rendered.contains("***********"));
+    }
+
+    #[test]
+    fn lock_file_form_password_confirmation_mismatch_shows_error() {
+        let mut app = test_app();
+        let mut state = LockFileFormState {
+            input_path: TextField::new("input.txt"),
+            output_path: TextField::new("input.txt.timelocked"),
+            password: SecretTextField::new("one".to_string()),
+            password_confirmation: SecretTextField::new("two".to_string()),
+            focus: LockFileFocus::Lock,
+            ..LockFileFormState::default()
+        };
+
+        let screen = handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+        );
+
+        assert!(matches!(screen, Screen::LockFileForm(_)));
+        assert!(
+            matches!(app.modal, Some(Modal::Error(ref message)) if message.contains("do not match"))
+        );
+    }
+
+    #[test]
+    fn lock_file_form_passes_password_to_worker_when_present() {
+        let mut app = test_app();
+        let state = LockFileFormState {
+            input_path: TextField::new("input.txt"),
+            output_path: TextField::new("input.txt.timelocked"),
+            password: SecretTextField::new(" exact password ".to_string()),
+            password_confirmation: SecretTextField::new(" exact password ".to_string()),
+            ..LockFileFormState::default()
+        };
+
+        let request = build_lock_file_request(&mut app, &state).expect("request should build");
+
+        assert_eq!(
+            request
+                .password
+                .expect("password should be present")
+                .expose_secret(),
+            " exact password "
+        );
+    }
+
+    #[test]
+    fn lock_form_empty_password_keeps_unprotected_request() {
+        let password = SecretTextField::default();
+        let confirmation = SecretTextField::default();
+
+        let request_password =
+            password_from_fields(&password, &confirmation).expect("empty password is valid");
+
+        assert!(request_password.is_none());
     }
 }

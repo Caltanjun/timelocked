@@ -1,5 +1,6 @@
 pub(crate) mod browser;
 pub(crate) mod screen_state;
+pub(crate) mod secret_text_field;
 pub(crate) mod text_field;
 
 pub(crate) use browser::{
@@ -7,4 +8,5 @@ pub(crate) use browser::{
     FileBrowserState,
 };
 pub(crate) use screen_state::{FooterContent, Modal, Screen};
+pub(crate) use secret_text_field::SecretTextField;
 pub(crate) use text_field::TextField;
