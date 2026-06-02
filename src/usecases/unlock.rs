@@ -48,7 +48,7 @@ pub struct PasswordPromptContext {
     pub previous_attempt_failed: bool,
 }
 
-pub type PasswordProvider = dyn FnMut(PasswordPromptContext) -> Result<SecretString>;
+pub type PasswordProvider<'a> = dyn FnMut(PasswordPromptContext) -> Result<SecretString> + 'a;
 
 fn recover_file_key_from_timelock(
     request: RecoverFileKeyRequest<'_>,
@@ -85,7 +85,7 @@ pub fn execute_with_cancel_and_password_provider(
     request: UnlockRequest,
     on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
     cancellation: Option<&CancellationToken>,
-    mut password_provider: Option<&mut PasswordProvider>,
+    mut password_provider: Option<&mut PasswordProvider<'_>>,
 ) -> Result<UnlockResponse> {
     ensure_not_cancelled(cancellation)?;
 
@@ -258,7 +258,7 @@ fn recover_password_protected_file_key(
     cached_timelock_mask: &mut Option<[u8; 32]>,
     on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
     cancellation: Option<&CancellationToken>,
-    password_provider: Option<&mut PasswordProvider>,
+    password_provider: Option<&mut PasswordProvider<'_>>,
     prompt_context: PasswordPromptContext,
 ) -> Result<[u8; 32]> {
     if cached_timelock_mask.is_none() {
