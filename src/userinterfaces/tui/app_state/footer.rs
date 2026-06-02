@@ -14,6 +14,12 @@ pub(super) fn footer_content(app: &App) -> FooterContent {
                 center: "Message".to_string(),
             };
         }
+        if matches!(modal, Modal::PasswordPrompt(_)) {
+            return FooterContent {
+                left: "Tab Focus   Enter Select   Esc Cancel".to_string(),
+                center: "Password required".to_string(),
+            };
+        }
     }
 
     let (left, center) = match &app.screen {

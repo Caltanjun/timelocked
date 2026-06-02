@@ -2,7 +2,8 @@
 
 use super::{
     completed_lock_progress, App, LockCompleteFocus, LockCompleteState, MainMenuState, Modal,
-    Screen, UnlockCompleteFocus, UnlockCompleteState,
+    PasswordPromptFocus, PasswordPromptState, Screen, SecretTextField, UnlockCompleteFocus,
+    UnlockCompleteState,
 };
 use crate::base::Error;
 use crate::userinterfaces::tui::features::shared::unlock_estimate::refresh_unlock_estimate_state;
@@ -79,6 +80,27 @@ fn poll_unlock_worker(
         match event {
             UnlockWorkerEvent::Progress(progress) => {
                 state.progress = progress;
+            }
+            UnlockWorkerEvent::PasswordRequired {
+                attempt,
+                max_attempts,
+                previous_attempt_failed,
+                reply,
+            } => {
+                if state.cancel_requested || state.worker.cancellation.is_cancelled() {
+                    let _ = reply.send(Err(Error::Cancelled));
+                    break;
+                }
+
+                app.modal = Some(Modal::PasswordPrompt(PasswordPromptState {
+                    password: SecretTextField::default(),
+                    focus: PasswordPromptFocus::Password,
+                    attempt,
+                    max_attempts,
+                    previous_attempt_failed,
+                    reply,
+                }));
+                break;
             }
             UnlockWorkerEvent::Finished(result) => {
                 terminal = Some(result);
@@ -229,6 +251,25 @@ mod tests {
         }
     }
 
+    fn password_required_event(
+        attempt: u8,
+        previous_attempt_failed: bool,
+    ) -> (
+        UnlockWorkerEvent,
+        mpsc::Receiver<crate::base::Result<crate::base::SecretString>>,
+    ) {
+        let (reply, receiver) = mpsc::channel();
+        (
+            UnlockWorkerEvent::PasswordRequired {
+                attempt,
+                max_attempts: 3,
+                previous_attempt_failed,
+                reply,
+            },
+            receiver,
+        )
+    }
+
     fn verify_worker_with_events(events: Vec<VerifyWorkerEvent>) -> VerifyWorker {
         let (sender, receiver) = mpsc::channel();
         for event in events {
@@ -362,6 +403,135 @@ mod tests {
             _ => panic!("expected unlock complete screen"),
         }
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn password_required_event_opens_password_modal() {
+        let mut app = test_app();
+        let (event, _reply) = password_required_event(1, false);
+        app.screen = Screen::UnlockProgress(UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-timelock", 1, 2, Some(7), Some(8.0)),
+            worker: unlock_worker_with_events(vec![event]),
+            cancel_requested: false,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Progress,
+        });
+
+        app.poll_workers();
+
+        assert!(matches!(app.screen, Screen::UnlockProgress(_)));
+        match &app.modal {
+            Some(Modal::PasswordPrompt(state)) => {
+                assert_eq!(state.attempt, 1);
+                assert!(!state.previous_attempt_failed);
+                assert!(state.password.is_empty());
+            }
+            _ => panic!("expected password prompt modal"),
+        }
+    }
+
+    #[test]
+    fn cancelled_unlock_progress_replies_cancelled_to_password_request_without_modal() {
+        let mut app = test_app();
+        let (event, reply) = password_required_event(1, false);
+        app.screen = Screen::UnlockProgress(UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-timelock", 1, 2, Some(7), Some(8.0)),
+            worker: unlock_worker_with_events(vec![event]),
+            cancel_requested: true,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Cancel,
+        });
+
+        app.poll_workers();
+
+        assert!(matches!(app.screen, Screen::UnlockProgress(_)));
+        assert!(app.modal.is_none());
+        let result = reply.recv().expect("password reply should be sent");
+        assert!(matches!(result, Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn cancellation_token_replies_cancelled_to_password_request_without_modal() {
+        let mut app = test_app();
+        let (event, reply) = password_required_event(1, false);
+        let worker = unlock_worker_with_events(vec![event]);
+        worker.cancellation.cancel();
+        app.screen = Screen::UnlockProgress(UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-timelock", 1, 2, Some(7), Some(8.0)),
+            worker,
+            cancel_requested: false,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Progress,
+        });
+
+        app.poll_workers();
+
+        assert!(matches!(app.screen, Screen::UnlockProgress(_)));
+        assert!(app.modal.is_none());
+        let result = reply.recv().expect("password reply should be sent");
+        assert!(matches!(result, Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn wrong_password_from_modal_reopens_password_modal_when_attempts_remain() {
+        let mut app = test_app();
+        let (first, _first_reply) = password_required_event(1, false);
+        let (second, _second_reply) = password_required_event(2, true);
+        app.screen = Screen::UnlockProgress(UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-timelock", 1, 2, Some(7), Some(8.0)),
+            worker: unlock_worker_with_events(vec![first, second]),
+            cancel_requested: false,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Progress,
+        });
+
+        app.poll_workers();
+        match &app.modal {
+            Some(Modal::PasswordPrompt(state)) => assert_eq!(state.attempt, 1),
+            _ => panic!("expected first password prompt"),
+        }
+        app.modal = None;
+
+        app.poll_workers();
+
+        match &app.modal {
+            Some(Modal::PasswordPrompt(state)) => {
+                assert_eq!(state.attempt, 2);
+                assert!(state.previous_attempt_failed);
+                assert!(state.password.is_empty());
+            }
+            _ => panic!("expected retry password prompt"),
+        }
+    }
+
+    #[test]
+    fn third_wrong_password_from_modal_shows_error_after_worker_finishes() {
+        let mut app = test_app();
+        app.screen = Screen::UnlockProgress(UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-decrypt", 1, 2, Some(7), Some(8.0)),
+            worker: unlock_worker_with_events(vec![UnlockWorkerEvent::Finished(Err(
+                Error::Crypto(
+                    "payload authentication failed (wrong password or file is corrupted)"
+                        .to_string(),
+                ),
+            ))]),
+            cancel_requested: false,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Progress,
+        });
+
+        app.poll_workers();
+
+        assert!(matches!(app.screen, Screen::MainMenu(_)));
+        match &app.modal {
+            Some(Modal::Error(message)) => assert!(message.contains("wrong password")),
+            _ => panic!("expected wrong-password error modal"),
+        }
     }
 
     #[test]

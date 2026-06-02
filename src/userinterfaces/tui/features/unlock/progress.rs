@@ -155,12 +155,50 @@ pub fn handle_key(mut state: UnlockProgressState, key: KeyEvent, _app: &mut App)
 
 #[cfg(test)]
 mod tests {
-    use super::UnlockProgressFocus;
+    use std::sync::mpsc;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{handle_key, UnlockProgressFocus, UnlockProgressState};
+    use crate::base::progress_status::ProgressStatus;
+    use crate::base::CancellationToken;
+    use crate::userinterfaces::tui::app_state::{App, Screen};
+    use crate::userinterfaces::tui::worker::UnlockWorker;
 
     #[test]
     fn unlock_progress_focus_cycles_between_progress_and_cancel() {
         let focus = UnlockProgressFocus::Progress;
         assert!(matches!(focus.next(), UnlockProgressFocus::Cancel));
         assert!(matches!(focus.prev(), UnlockProgressFocus::Cancel));
+    }
+
+    #[test]
+    fn unlock_cancel_during_timelock_still_works_before_password_prompt() {
+        let (_sender, receiver) = mpsc::channel();
+        let state = UnlockProgressState {
+            file_display: "archive.timelocked".to_string(),
+            progress: ProgressStatus::new("unlock-timelock", 1, 2, Some(1), Some(1.0)),
+            worker: UnlockWorker {
+                receiver,
+                cancellation: CancellationToken::default(),
+            },
+            cancel_requested: false,
+            cpu_count: 1,
+            focus: UnlockProgressFocus::Progress,
+        };
+
+        let screen = handle_key(
+            state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut App::new(false),
+        );
+
+        match screen {
+            Screen::UnlockProgress(state) => {
+                assert!(state.cancel_requested);
+                assert!(state.worker.cancellation.is_cancelled());
+            }
+            _ => panic!("expected unlock progress screen"),
+        }
     }
 }

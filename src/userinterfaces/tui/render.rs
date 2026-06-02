@@ -8,7 +8,9 @@ use super::app_state::{App, Modal, Screen};
 use super::components::layout::{
     constrained_page_area, render_footer, render_header, render_small_terminal,
 };
-use super::components::modal::{render_browser_modal, render_message_modal};
+use super::components::modal::{
+    render_browser_modal, render_message_modal, render_password_prompt_modal,
+};
 
 use super::features::inspect::details::render as render_inspect_details;
 use super::features::inspect::form::render as render_inspect_form;
@@ -57,6 +59,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 render_message_modal(frame, viewport, "Info", message, app, false)
             }
             Modal::Browser(browser) => render_browser_modal(frame, viewport, browser, app),
+            Modal::PasswordPrompt(state) => {
+                render_password_prompt_modal(frame, viewport, state, app)
+            }
         }
     }
 }

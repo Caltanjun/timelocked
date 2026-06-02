@@ -7,6 +7,8 @@ pub(crate) use browser::{
     browser_filter_toggle_available, BrowserFileFilter, BrowserMode, BrowserTarget,
     FileBrowserState,
 };
-pub(crate) use screen_state::{FooterContent, Modal, Screen};
+pub(crate) use screen_state::{
+    FooterContent, Modal, PasswordPromptFocus, PasswordPromptState, Screen,
+};
 pub(crate) use secret_text_field::SecretTextField;
 pub(crate) use text_field::TextField;
