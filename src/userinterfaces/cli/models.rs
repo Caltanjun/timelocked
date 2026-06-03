@@ -8,6 +8,10 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 
 use crate::domains::timelock::{all_profiles, CURRENT_MACHINE_PROFILE_ID};
 
+const LOCK_AFTER_HELP: &str = "Examples:\n  timelocked lock ./secret.txt --target 7d --hardware-profile desktop-2026\n  timelocked lock ./secret.txt --target 7d --password '<passphrase>'\n\nPassword protection is additional to the mandatory time-lock puzzle.\nWarning: --password is a command-line argument and may be visible in shell history or process listings.";
+
+const UNLOCK_AFTER_HELP: &str = "Examples:\n  timelocked unlock ./secret.txt.timelocked\n  timelocked unlock --in ./secret.txt.timelocked --out-dir ./out\n\nFor password-protected timelocked files, unlock prompts for the passphrase after the sequential time-lock work finishes. Official clients allow up to 3 total attempts in one unlock run for typo recovery without re-solving the puzzle.";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "timelocked",
@@ -47,7 +51,7 @@ pub(crate) enum Commands {
     ArgGroup::new("difficulty")
         .required(true)
         .args(["target", "iterations"])
-))]
+), after_help = LOCK_AFTER_HELP)]
 pub(crate) struct LockArgs {
     #[arg(
         long = "in",
@@ -126,6 +130,7 @@ fn parse_non_empty_password(value: &str) -> Result<String, String> {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = UNLOCK_AFTER_HELP)]
 pub(crate) struct UnlockArgs {
     #[arg(
         long = "in",
@@ -278,5 +283,26 @@ mod tests {
 
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains("super secret"));
+    }
+
+    #[test]
+    fn lock_help_documents_password_example_and_visibility_warning() {
+        let err = Cli::try_parse_from(["timelocked", "lock", "--help"])
+            .expect_err("help should exit before parsing args");
+        let help = err.to_string();
+
+        assert!(help.contains("timelocked lock ./secret.txt --target 7d --password '<passphrase>'"));
+        assert!(help.contains("may be visible in shell history or process listings"));
+    }
+
+    #[test]
+    fn unlock_help_documents_password_prompt_timing_and_attempts() {
+        let err = Cli::try_parse_from(["timelocked", "unlock", "--help"])
+            .expect_err("help should exit before parsing args");
+        let help = err.to_string();
+
+        assert!(help
+            .contains("prompts for the passphrase after the sequential time-lock work finishes"));
+        assert!(help.contains("up to 3 total attempts"));
     }
 }

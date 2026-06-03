@@ -77,7 +77,7 @@ If `notice_len` is invalid or the start superblock is not found at the expected 
 
 ## 2) Superblock copies
 
-v1 stores exactly 2 superblock copies:
+v1 and v2 store exactly 2 superblock copies:
 
 - one near the beginning of the file, after the notice
 - one at the end of the file
@@ -168,13 +168,22 @@ All integers are little-endian unless explicitly noted otherwise. Field order is
 | `modulus_n_bytes_be` | bytes | Timelock modulus `n = p * q`. |
 | `base_a_len` | `u32` | Big-endian byte length of timelock base `a`. |
 | `base_a_bytes_be` | bytes | Timelock base `a`. |
-| `wrapped_key` | 32 bytes | File key `K` masked by the timelock result. |
+| `wrapped_key` | 32 bytes | Wrapped file key. For v1/time-lock-only files, file key `K` is masked by the timelock result. For v2 password-protected files, file key `K` is masked by the Argon2id password wrapping key. |
 
 ### v2 password-protection extension
 
 Superblock body v2 preserves the complete v1 field prefix and appends password-protection metadata after `wrapped_key`.
 
 Writers use v1 when password metadata is absent and v2 when password metadata is present. Existing v1 artifacts therefore remain byte-compatible and continue to parse without password metadata.
+
+Compatibility behavior:
+
+- unprotected writers emit body v1
+- password-protected writers emit body v2
+- new readers parse both v1 and v2
+- old readers that only know v1 reject v2 bodies as unsupported
+- v1 bodies do not carry password-protection metadata
+- v2 password-protection metadata is authenticated because `superblock_digest = BLAKE3(superblock_body)` covers the full authoritative body and is used as AEAD associated data
 
 Additional v2 fields for password-protected files:
 
@@ -190,6 +199,30 @@ Additional v2 fields for password-protected files:
 
 Readers MUST reject unknown `key_protection_algorithm_id` values, unknown `password_kdf_algorithm_id` values, empty password salts for protected files, and trailing bytes after the final expected field.
 
+No password verifier or password hash is stored. A wrong passphrase is detected only when the derived file key fails AEAD payload authentication during unlock.
+
+Key wrapping formulas:
+
+```text
+v1/time-lock-only:
+wrapped_key = K XOR timelock_mask
+
+v2/timelock-plus-argon2id-v1:
+password_wrap_key = Argon2id-v=19(input, salt, params, output_len=32)
+wrapped_key = K XOR password_wrap_key
+```
+
+For `timelock-plus-argon2id-v1`, the password wrapping key is derived with Argon2id using:
+
+```text
+input = "TLCK-PASSWORD-WRAP-v1" || timelock_mask || passphrase_utf8
+salt = password_salt
+params = password_kdf_memory_kib, password_kdf_iterations, password_kdf_parallelism
+output_len = 32
+```
+
+The Argon2id version is `0x13` (`v=19`). `timelock_mask` is the 32-byte mask derived from solving the time-lock puzzle. `passphrase_utf8` is the exact passphrase byte sequence supplied by the user; readers MUST NOT trim or normalize it.
+
 ### Field validity rules
 
 - unknown critical `flags` bits MUST fail closed
@@ -204,6 +237,7 @@ Readers MUST reject unknown `key_protection_algorithm_id` values, unknown `passw
 - `hardware_profile_utf8` MUST be valid UTF-8 if present
 - v1 bodies MUST NOT contain password-protection metadata
 - v2 password-protected bodies MUST use `key_protection_algorithm_id = 2` and `password_kdf_algorithm_id = 1`
+- v2 password-protected bodies MUST NOT store a password verifier
 
 ### Notes on superblock contents
 
