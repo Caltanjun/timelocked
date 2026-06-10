@@ -11,12 +11,14 @@ use zeroize::Zeroize;
 
 use crate::base::progress_status::ProgressStatus;
 use crate::base::{ensure_not_cancelled, CancellationToken, Result};
-use crate::domains::timelock::create_puzzle_and_wrap_key;
+use crate::domains::timelock::create_puzzle_and_derive_mask;
 use crate::domains::timelocked_file::{
     choose_rs_shard_bytes_for_protected_stream_len, predicted_protected_stream_len,
-    write_timelocked_artifact, LockArtifactRequest, PayloadRegionEncodingParams,
-    TimelockPayloadMaterial, DEFAULT_LOCK_CHUNK_SIZE_BYTES, DEFAULT_RS_DATA_SHARDS,
-    DEFAULT_RS_PARITY_SHARDS,
+    validate_lock_passphrase, wrap_file_key_for_password_protected_lock,
+    wrap_file_key_with_timelock_mask, write_timelocked_artifact, LockArtifactRequest,
+    PasswordProtectionMetadata, PasswordProtectionParams, PayloadRegionEncodingParams,
+    TimelockPayloadMaterial, DEFAULT_LOCK_CHUNK_SIZE_BYTES, DEFAULT_PASSWORD_SALT_LEN,
+    DEFAULT_RS_DATA_SHARDS, DEFAULT_RS_PARITY_SHARDS,
 };
 
 use super::input_staging::StagedLockInput;
@@ -72,9 +74,16 @@ fn write_payload_artifacts_with_key(
     progress_cb: &mut dyn FnMut(ProgressStatus),
     cancellation: Option<&CancellationToken>,
 ) -> Result<PayloadArtifacts> {
+    if let Some(passphrase) = &request.password {
+        validate_lock_passphrase(passphrase)?;
+    }
+
     progress_cb(ProgressStatus::new("lock-primes", 0, 1, None, None));
 
-    let puzzle = create_puzzle_and_wrap_key(file_key, plan.iterations, request.modulus_bits)?;
+    let mut puzzle = create_puzzle_and_derive_mask(plan.iterations, request.modulus_bits)?;
+    let (wrapped_key, password_protection) =
+        key_protection_material(file_key, &puzzle.solution_mask, request.password.as_ref())?;
+    puzzle.solution_mask.zeroize();
 
     progress_cb(ProgressStatus::new("lock-puzzle", 1, 1, None, None));
 
@@ -111,8 +120,9 @@ fn write_payload_artifacts_with_key(
                 timelock_material: TimelockPayloadMaterial {
                     modulus_n: puzzle.modulus_n,
                     base_a: puzzle.base_a,
-                    wrapped_key: puzzle.wrapped_key,
+                    wrapped_key,
                 },
+                password_protection,
             },
             Some(progress_cb),
             cancellation,
@@ -121,6 +131,31 @@ fn write_payload_artifacts_with_key(
     }
 
     Ok(PayloadArtifacts { artifact_temp })
+}
+
+fn key_protection_material(
+    file_key: &[u8; 32],
+    timelock_mask: &[u8; 32],
+    password: Option<&crate::base::SecretString>,
+) -> Result<([u8; 32], Option<PasswordProtectionMetadata>)> {
+    match password {
+        Some(passphrase) => {
+            let mut salt = vec![0_u8; DEFAULT_PASSWORD_SALT_LEN];
+            OsRng.fill_bytes(&mut salt);
+            let params = PasswordProtectionParams::default_with_salt(salt)?;
+            let (wrapped_key, metadata) = wrap_file_key_for_password_protected_lock(
+                file_key,
+                timelock_mask,
+                passphrase,
+                params,
+            )?;
+            Ok((wrapped_key, Some(metadata)))
+        }
+        None => Ok((
+            wrap_file_key_with_timelock_mask(file_key, timelock_mask),
+            None,
+        )),
+    }
 }
 
 fn current_unix_seconds() -> u64 {

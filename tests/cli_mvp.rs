@@ -84,6 +84,43 @@ fn lock_accepts_current_machine_profile() {
 }
 
 #[test]
+fn cli_lock_with_password_inspect_reports_password_protected() {
+    let dir = tempdir().expect("tempdir");
+    let input_path = dir.path().join("protected-note.txt");
+    let output_path = dir.path().join("protected-note.txt.timelocked");
+    fs::write(&input_path, b"protected cli input").expect("write input");
+
+    let mut lock_cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("timelocked"));
+    lock_cmd
+        .env("MODULUS_BITS", "256")
+        .current_dir(dir.path())
+        .args([
+            "lock",
+            "--in",
+            input_path.to_str().expect("input path utf8"),
+            "--iterations",
+            "24",
+            "--password",
+            "correct horse",
+        ]);
+    lock_cmd.assert().success();
+
+    let mut inspect_cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("timelocked"));
+    inspect_cmd
+        .env("MODULUS_BITS", "256")
+        .current_dir(dir.path())
+        .args([
+            "inspect",
+            "--in",
+            output_path.to_str().expect("output path utf8"),
+        ]);
+    inspect_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Password protected: yes"));
+}
+
+#[test]
 fn lock_inspect_verify_unlock_roundtrip_multichunk_file() {
     let dir = tempdir().expect("tempdir");
     let input_path = dir.path().join("note.txt");

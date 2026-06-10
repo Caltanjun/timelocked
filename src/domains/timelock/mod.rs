@@ -23,8 +23,9 @@ pub use lock_difficulty::{
     estimate_duration_on_rate_seconds, resolve_lock_difficulty, ResolvedLockDifficulty,
     DEFAULT_HARDWARE_PROFILE_ID,
 };
-pub use puzzle_material::{TimelockPuzzleMaterial, FILE_KEY_SIZE};
+pub use puzzle_material::{CreatedTimelockPuzzle, TimelockPuzzleMaterial, FILE_KEY_SIZE};
 pub use puzzle_service::{
     benchmark_repeated_squaring_iterations, benchmark_repeated_squaring_iterations_per_second,
-    create_puzzle_and_wrap_key, unwrap_key, unwrap_key_with_cancel,
+    create_puzzle_and_derive_mask, create_puzzle_and_wrap_key, solve_puzzle_mask_with_cancel,
+    unwrap_key, unwrap_key_with_cancel,
 };

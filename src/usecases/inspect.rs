@@ -7,7 +7,7 @@ use crate::base::Result;
 use crate::domains::timelock::{
     estimate_duration_on_current_machine_seconds, estimate_duration_on_profile_seconds,
 };
-use crate::domains::timelocked_file::{parse_container, TimelockedHeader, BODY_VERSION_V1};
+use crate::domains::timelocked_file::{parse_container, TimelockedHeader};
 
 #[derive(Debug, Clone)]
 pub struct InspectRequest {
@@ -40,7 +40,7 @@ pub fn execute(request: InspectRequest) -> Result<InspectResponse> {
     Ok(InspectResponse {
         path: request.input,
         payload_len: parsed.superblock.payload_region_len,
-        format_version: BODY_VERSION_V1,
+        format_version: parsed.superblock.body_version,
         header: parsed.header,
         estimated_duration_on_profile_seconds,
         estimated_duration_on_current_machine_seconds,
@@ -127,5 +127,24 @@ mod tests {
             response.estimated_duration_on_current_machine_seconds,
             Some(2)
         );
+    }
+
+    #[test]
+    fn parse_existing_v1_fixture_still_succeeds() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("v1-fixture.timelocked");
+
+        SampleTimelockedFileBuilder::new(Vec::<u8>::new())
+            .write_to(&path)
+            .expect("write v1 artifact");
+
+        let response = execute(InspectRequest {
+            input: path,
+            current_machine_iterations_per_second: None,
+        })
+        .expect("generated v1 fixture should inspect successfully");
+
+        assert_eq!(response.format_version, 1);
+        assert!(!response.header.password_protection.password_protected);
     }
 }

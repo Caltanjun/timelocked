@@ -62,6 +62,7 @@ This can also work for online games, social networks, etc..
 - Built-in benchmark to estimate unlock duration on your machine (calibration)
 - State of the art AEAD encryption - ensure data integrity
 - Recoverability from file corruption - data redundancy with Reed-Solomon algorithm
+- Optional password protection in addition to the mandatory time-lock puzzle
 - Backward compatibility - future versions will unlock file locked years before
 
 ## Download
@@ -97,6 +98,17 @@ Important nuance:
 
 Faster computers can do the required work faster, so the "delay" can be shorter on very powerful hardware. If your use case is important, choose a conservative delay and add a safety margin.
 Quantum computer are way better for certains usecases like factorisation and parralelization. As the Timelocked solution use sequential work, it will still need time to unlock a file. Howerver, if future quantum capabilities can break assumptions behind the time-lock construction, format/algorithm migration will be required.
+
+Optional password protection can mitigate the faster-hardware problem when the passphrase remains secret. A password-protected timelocked file still requires the sequential time-lock puzzle first; the passphrase is an additional secret needed after that work finishes. It does not replace the delay.
+
+
+### How does password protection work?
+
+When locking, you may add a passphrase. Timelocked then protects the file key with both the time-lock puzzle result and a password-derived wrapping key. The passphrase alone cannot unlock the payload, and the time-lock result alone cannot unlock a password-protected payload.
+
+Unlock prompting happens only after the sequential time-lock work finishes. In the official CLI and TUI, a wrong passphrase can be retried up to 3 total attempts in the same unlock run without re-solving the time-lock puzzle. This retry limit is typo recovery for users of the official clients, not cryptographic brute-force protection. An attacker who has solved the time-lock puzzle can modify a client or reuse the solved result to keep trying passphrases.
+
+CLI warning: `timelocked lock --password '<passphrase>'` passes the passphrase as a command-line argument. Command-line arguments may be visible in shell history or process listings. Prefer the TUI password field if that risk matters for your environment.
 
 
 ### Does Timelocked unlock at an exact date/time?
@@ -158,6 +170,7 @@ No. AEAD can tell you "this was decrypted with the right key and wasn't modified
 
 - [Domain language](docs/domain-language.md)
 - [Binary file format](docs/binary-file-format.md)
+- [Release notes](docs/release-notes.md)
 - [Architecture](docs/architecture.md)
 
 
@@ -181,6 +194,14 @@ Using target delay + hardware profile:
 ```bash
 timelocked lock ./secret.txt --target 7d --hardware-profile desktop-2026
 ```
+
+Adding optional password protection:
+
+```bash
+timelocked lock ./secret.txt --target 7d --password '<passphrase>'
+```
+
+Password protection is additional to the mandatory time-lock puzzle. The `--password` value is a command-line argument and may be visible in shell history or process listings.
 
 Using explicit `--in` + iterations:
 
@@ -226,6 +247,8 @@ Default output path (same dir, original filename if known):
 ```bash
 timelocked unlock ./secret.txt.timelocked
 ```
+
+For password-protected timelocked files, the CLI prompts for the passphrase after the sequential time-lock work finishes. Wrong passphrases can be retried up to 3 total attempts in that unlock run without re-solving the puzzle; this is typo recovery, not brute-force protection.
 
 If the chosen output file already exists, unlock keeps your existing file and writes to
 an incremented name like `secret.1.txt`, `secret.2.txt`, and so on.

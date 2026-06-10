@@ -139,6 +139,31 @@ pub(crate) fn line_with_field(
     Line::from(spans)
 }
 
+pub(crate) fn line_with_secret_field(
+    label: &str,
+    label_width: usize,
+    secret_char_count: usize,
+    focused: bool,
+    app: &App,
+) -> Line<'static> {
+    let mut spans = row_prefix_spans(label, label_width, focused, app);
+    spans.push(field_span(
+        &masked_secret_value(secret_char_count),
+        FieldChrome::Input,
+        focused,
+        app,
+    ));
+    Line::from(spans)
+}
+
+fn masked_secret_value(secret_char_count: usize) -> String {
+    if secret_char_count == 0 {
+        String::new()
+    } else {
+        "*".repeat(secret_char_count)
+    }
+}
+
 pub(crate) fn line_with_field_and_button(
     label: &str,
     label_width: usize,
@@ -261,7 +286,8 @@ mod tests {
 
     use super::{
         display_value, focused_line, helper_line, italic_helper_line, label_width, line_with_field,
-        menu_item_with_right_label, read_only_row, FieldChrome, ReadOnlyValueKind,
+        line_with_secret_field, masked_secret_value, menu_item_with_right_label, read_only_row,
+        FieldChrome, ReadOnlyValueKind,
     };
     use crate::userinterfaces::tui::app_state::App;
 
@@ -273,6 +299,20 @@ mod tests {
     fn empty_values_render_as_visible_blank_slot() {
         assert_eq!(display_value(""), " ");
         assert_eq!(display_value("   "), " ");
+    }
+
+    #[test]
+    fn secret_values_render_as_masked_placeholders() {
+        assert_eq!(masked_secret_value(0), "");
+        assert_eq!(masked_secret_value(4), "****");
+
+        let line = line_with_secret_field("Password", 8, 4, false, &test_app(false));
+
+        assert!(line.spans.iter().any(|span| span.content.contains("****")));
+        assert!(!line
+            .spans
+            .iter()
+            .any(|span| span.content.contains("secret")));
     }
 
     #[test]

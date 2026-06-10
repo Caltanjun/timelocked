@@ -1,11 +1,16 @@
 //! Clap models for the Timelocked CLI.
 //! These types describe the command surface and stay separate from execution logic.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 
 use crate::domains::timelock::{all_profiles, CURRENT_MACHINE_PROFILE_ID};
+
+const LOCK_AFTER_HELP: &str = "Examples:\n  timelocked lock ./secret.txt --target 7d --hardware-profile desktop-2026\n  timelocked lock ./secret.txt --target 7d --password '<passphrase>'\n\nPassword protection is additional to the mandatory time-lock puzzle.\nWarning: --password is a command-line argument and may be visible in shell history or process listings.";
+
+const UNLOCK_AFTER_HELP: &str = "Examples:\n  timelocked unlock ./secret.txt.timelocked\n  timelocked unlock --in ./secret.txt.timelocked --out-dir ./out\n\nFor password-protected timelocked files, unlock prompts for the passphrase after the sequential time-lock work finishes. Official clients allow up to 3 total attempts in one unlock run for typo recovery without re-solving the puzzle.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -41,12 +46,12 @@ pub(crate) enum Commands {
     Tui,
 }
 
-#[derive(Debug, Args)]
+#[derive(Args)]
 #[command(group(
     ArgGroup::new("difficulty")
         .required(true)
         .args(["target", "iterations"])
-))]
+), after_help = LOCK_AFTER_HELP)]
 pub(crate) struct LockArgs {
     #[arg(
         long = "in",
@@ -85,13 +90,47 @@ pub(crate) struct LockArgs {
     pub(crate) creator_message_file: Option<PathBuf>,
 
     #[arg(
+        long = "password",
+        value_name = "PASSPHRASE",
+        value_parser = parse_non_empty_password
+    )]
+    pub(crate) password: Option<String>,
+
+    #[arg(
         long = "verify",
         help = "Run structural verification after writing without unlocking the payload"
     )]
     pub(crate) verify: bool,
 }
 
+impl fmt::Debug for LockArgs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LockArgs")
+            .field("input", &self.input)
+            .field("input_arg", &self.input_arg)
+            .field("output", &self.output)
+            .field("target", &self.target)
+            .field("iterations", &self.iterations)
+            .field("hardware_profile", &self.hardware_profile)
+            .field("creator_name", &self.creator_name)
+            .field("creator_message", &self.creator_message)
+            .field("creator_message_file", &self.creator_message_file)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("verify", &self.verify)
+            .finish()
+    }
+}
+
+fn parse_non_empty_password(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Err("password cannot be empty".to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 #[derive(Debug, Args)]
+#[command(after_help = UNLOCK_AFTER_HELP)]
 pub(crate) struct UnlockArgs {
     #[arg(
         long = "in",
@@ -187,5 +226,83 @@ mod tests {
     fn parses_calibrate_subcommand() {
         let cli = Cli::try_parse_from(["timelocked", "calibrate"]).expect("parse cli");
         assert!(matches!(cli.command, Some(Commands::Calibrate)));
+    }
+
+    #[test]
+    fn cli_lock_parses_password_argument() {
+        let cli = Cli::try_parse_from([
+            "timelocked",
+            "lock",
+            "secret.txt",
+            "--iterations",
+            "10",
+            "--password",
+            "do not trim me ",
+        ])
+        .expect("parse cli");
+
+        let Some(Commands::Lock(args)) = cli.command else {
+            panic!("expected lock command");
+        };
+        assert_eq!(args.password.as_deref(), Some("do not trim me "));
+    }
+
+    #[test]
+    fn cli_lock_rejects_empty_password_argument() {
+        let err = Cli::try_parse_from([
+            "timelocked",
+            "lock",
+            "secret.txt",
+            "--iterations",
+            "10",
+            "--password",
+            "",
+        ])
+        .expect_err("empty password should be rejected");
+
+        assert!(err.to_string().contains("password cannot be empty"));
+    }
+
+    #[test]
+    fn lock_args_debug_redacts_password_argument() {
+        let cli = Cli::try_parse_from([
+            "timelocked",
+            "lock",
+            "secret.txt",
+            "--iterations",
+            "10",
+            "--password",
+            "super secret",
+        ])
+        .expect("parse cli");
+
+        let Some(Commands::Lock(args)) = cli.command else {
+            panic!("expected lock command");
+        };
+        let debug = format!("{args:?}");
+
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("super secret"));
+    }
+
+    #[test]
+    fn lock_help_documents_password_example_and_visibility_warning() {
+        let err = Cli::try_parse_from(["timelocked", "lock", "--help"])
+            .expect_err("help should exit before parsing args");
+        let help = err.to_string();
+
+        assert!(help.contains("timelocked lock ./secret.txt --target 7d --password '<passphrase>'"));
+        assert!(help.contains("may be visible in shell history or process listings"));
+    }
+
+    #[test]
+    fn unlock_help_documents_password_prompt_timing_and_attempts() {
+        let err = Cli::try_parse_from(["timelocked", "unlock", "--help"])
+            .expect_err("help should exit before parsing args");
+        let help = err.to_string();
+
+        assert!(help
+            .contains("prompts for the passphrase after the sequential time-lock work finishes"));
+        assert!(help.contains("up to 3 total attempts"));
     }
 }

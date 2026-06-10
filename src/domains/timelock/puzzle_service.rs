@@ -13,7 +13,7 @@ use rand::RngCore;
 use crate::base::progress_status::ProgressStatus;
 use crate::base::{CancellationToken, Error, Result};
 
-use super::puzzle_material::{TimelockPuzzleMaterial, FILE_KEY_SIZE};
+use super::puzzle_material::{CreatedTimelockPuzzle, TimelockPuzzleMaterial, FILE_KEY_SIZE};
 
 #[cfg(any(test, debug_assertions))]
 const MINIMUM_MODULUS_BITS: usize = 256;
@@ -25,6 +25,22 @@ pub fn create_puzzle_and_wrap_key(
     iterations: u64,
     modulus_bits: usize,
 ) -> Result<TimelockPuzzleMaterial> {
+    let puzzle = create_puzzle_and_derive_mask(iterations, modulus_bits)?;
+    let wrapped_key = xor_32(key, &puzzle.solution_mask);
+
+    Ok(TimelockPuzzleMaterial {
+        modulus_n: puzzle.modulus_n,
+        base_a: puzzle.base_a,
+        wrapped_key,
+        iterations: puzzle.iterations,
+        modulus_bits: puzzle.modulus_bits,
+    })
+}
+
+pub fn create_puzzle_and_derive_mask(
+    iterations: u64,
+    modulus_bits: usize,
+) -> Result<CreatedTimelockPuzzle> {
     if iterations == 0 {
         return Err(Error::InvalidArgument(
             "iterations must be greater than zero".to_string(),
@@ -59,14 +75,13 @@ pub fn create_puzzle_and_wrap_key(
     let b = a.modpow(&exponent, &n);
 
     let mask = derive_key_mask(&b);
-    let wrapped_key = xor_32(key, &mask);
 
-    Ok(TimelockPuzzleMaterial {
+    Ok(CreatedTimelockPuzzle {
         modulus_n: n,
         base_a: a,
-        wrapped_key,
         iterations,
         modulus_bits: modulus_bits as u16,
+        solution_mask: mask,
     })
 }
 
@@ -119,6 +134,15 @@ pub fn unwrap_key(
 
 pub fn unwrap_key_with_cancel(
     material: &TimelockPuzzleMaterial,
+    on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<[u8; FILE_KEY_SIZE]> {
+    let mask = solve_puzzle_mask_with_cancel(material, on_progress, cancellation)?;
+    Ok(xor_32(&material.wrapped_key, &mask))
+}
+
+pub fn solve_puzzle_mask_with_cancel(
+    material: &TimelockPuzzleMaterial,
     mut on_progress: Option<&mut dyn FnMut(ProgressStatus)>,
     cancellation: Option<&CancellationToken>,
 ) -> Result<[u8; FILE_KEY_SIZE]> {
@@ -165,7 +189,7 @@ pub fn unwrap_key_with_cancel(
     }
 
     let mask = derive_key_mask(&value);
-    Ok(xor_32(&material.wrapped_key, &mask))
+    Ok(mask)
 }
 
 pub fn benchmark_repeated_squaring_iterations(duration: Duration) -> u64 {
@@ -265,17 +289,18 @@ mod tests {
     use num_bigint::BigUint;
     use num_integer::Integer;
 
-    use crate::base::Error;
+    use crate::base::{CancellationToken, Error};
 
     use std::time::Duration;
 
     use super::{
         benchmark_repeated_squaring_iterations, benchmark_repeated_squaring_iterations_per_second,
-        calculate_iterations_per_second, create_puzzle_and_wrap_key, too_close, unwrap_key,
+        calculate_iterations_per_second, create_puzzle_and_derive_mask, create_puzzle_and_wrap_key,
+        solve_puzzle_mask_with_cancel, too_close, unwrap_key, unwrap_key_with_cancel,
     };
 
     #[test]
-    fn wraps_and_unwraps_key() {
+    fn create_puzzle_and_wrap_key_preserves_existing_unprotected_behavior() {
         let key = [42_u8; 32];
         let puzzle = create_puzzle_and_wrap_key(&key, 64, 256).expect("must create puzzle");
         let recovered = unwrap_key(&puzzle, None).expect("must unwrap key");
@@ -283,6 +308,52 @@ mod tests {
         assert!(puzzle.base_a > BigUint::from(1_u8));
         assert!(puzzle.base_a < puzzle.modulus_n);
         assert_eq!(puzzle.base_a.gcd(&puzzle.modulus_n), BigUint::from(1_u8));
+    }
+
+    #[test]
+    fn solve_puzzle_mask_matches_creation_mask() {
+        let created = create_puzzle_and_derive_mask(32, 256).expect("must create puzzle");
+        let material = super::TimelockPuzzleMaterial {
+            modulus_n: created.modulus_n,
+            base_a: created.base_a,
+            wrapped_key: [0_u8; 32],
+            iterations: created.iterations,
+            modulus_bits: created.modulus_bits,
+        };
+
+        let solved_mask =
+            solve_puzzle_mask_with_cancel(&material, None, None).expect("must solve mask");
+
+        assert_eq!(solved_mask, created.solution_mask);
+    }
+
+    #[test]
+    fn unwrap_key_with_cancel_still_recovers_unprotected_key() {
+        let key = [11_u8; 32];
+        let puzzle = create_puzzle_and_wrap_key(&key, 16, 256).expect("must create puzzle");
+
+        let recovered = unwrap_key_with_cancel(&puzzle, None, None).expect("must unwrap key");
+
+        assert_eq!(recovered, key);
+    }
+
+    #[test]
+    fn cancelled_mask_solving_returns_cancelled() {
+        let created = create_puzzle_and_derive_mask(16, 256).expect("must create puzzle");
+        let material = super::TimelockPuzzleMaterial {
+            modulus_n: created.modulus_n,
+            base_a: created.base_a,
+            wrapped_key: [0_u8; 32],
+            iterations: created.iterations,
+            modulus_bits: created.modulus_bits,
+        };
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+
+        let err = solve_puzzle_mask_with_cancel(&material, None, Some(&cancellation))
+            .expect_err("must fail");
+
+        assert!(matches!(err, Error::Cancelled));
     }
 
     #[test]

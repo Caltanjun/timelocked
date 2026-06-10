@@ -11,9 +11,10 @@ use super::payload_region::{
 };
 use super::superblock::{encode_end_superblock_copy, encode_start_superblock_copy};
 use super::{
-    encrypt_protected_stream_with_cancel, superblock_digest, SuperblockBody,
-    TimelockPayloadMaterial, AEAD_CIPHER_ID_XCHACHA20POLY1305, BODY_VERSION_V1,
-    RS_ALGORITHM_ID_GF256_REED_SOLOMON, TIMELOCK_ALGORITHM_ID_RSW_REPEATED_SQUARING_V1,
+    encrypt_protected_stream_with_cancel, superblock_digest, PasswordProtectionMetadata,
+    SuperblockBody, TimelockPayloadMaterial, AEAD_CIPHER_ID_XCHACHA20POLY1305, BODY_VERSION_V1,
+    BODY_VERSION_V2, RS_ALGORITHM_ID_GF256_REED_SOLOMON,
+    TIMELOCK_ALGORITHM_ID_RSW_REPEATED_SQUARING_V1,
 };
 
 pub const DEFAULT_LOCK_CHUNK_SIZE_BYTES: usize = 1024 * 1024;
@@ -43,6 +44,7 @@ pub struct LockArtifactRequest {
     pub payload_region_params: PayloadRegionEncodingParams,
     pub key_bytes: [u8; 32],
     pub timelock_material: TimelockPayloadMaterial,
+    pub password_protection: Option<PasswordProtectionMetadata>,
 }
 
 pub fn write_timelocked_artifact(
@@ -64,8 +66,14 @@ pub fn write_timelocked_artifact(
     )?;
     let payload_region_len = encoded_payload_region_len(protected_stream_len, layout)?;
 
+    let body_version = if request.password_protection.is_some() {
+        BODY_VERSION_V2
+    } else {
+        BODY_VERSION_V1
+    };
+
     let superblock = SuperblockBody {
-        body_version: BODY_VERSION_V1,
+        body_version,
         flags: 0,
         payload_plaintext_bytes: request.payload_plaintext_bytes,
         protected_stream_len,
@@ -84,6 +92,7 @@ pub fn write_timelocked_artifact(
         original_filename: request.original_filename.clone(),
         hardware_profile: request.hardware_profile.clone(),
         timelock_material: request.timelock_material.clone(),
+        password_protection: request.password_protection.clone(),
     };
 
     let digest = superblock_digest(&superblock)?;

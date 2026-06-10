@@ -103,6 +103,14 @@ pub(crate) fn render_inspect_result(
         println!("Created: {}", response.header.created_at);
         println!("Payload: {}", format_binary_size(response.payload_len));
         println!(
+            "Password protected: {}",
+            if response.header.password_protection.password_protected {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+        println!(
             "Hardware profile: {}",
             response.header.timelock_params.hardware_profile
         );

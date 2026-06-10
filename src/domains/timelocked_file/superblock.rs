@@ -171,6 +171,7 @@ mod tests {
                 base_a: BigUint::from(5_u32),
                 wrapped_key: [7_u8; 32],
             },
+            password_protection: None,
         }
     }
 

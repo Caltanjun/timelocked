@@ -7,6 +7,7 @@ description = "CLI tool to create and unlock timelocked files"
 
 [dependencies]
 anyhow = "1.0"
+argon2 = "0.5"
 blake3 = "1.5"
 chacha20poly1305 = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
@@ -21,6 +22,7 @@ num-traits = "0.2"
 rand = "0.8"
 ratatui = "0.29"
 reed-solomon-erasure = "6"
+rpassword = "7.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.10"

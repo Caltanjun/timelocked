@@ -166,10 +166,10 @@ pub fn handle_key(state: &mut InspectFormState, key: KeyEvent, app: &mut App) ->
                     input: input_path,
                     current_machine_iterations_per_second,
                 }) {
-                    Ok(response) => Screen::InspectDetails(InspectDetailsState {
+                    Ok(response) => Screen::InspectDetails(InspectDetailsState::new(
                         response,
-                        focus: InspectDetailsFocus::Unlock,
-                    }),
+                        InspectDetailsFocus::Unlock,
+                    )),
                     Err(err) => {
                         app.modal = Some(Modal::Error(err.to_string()));
                         Screen::InspectForm(state.clone())

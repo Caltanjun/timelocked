@@ -7,13 +7,14 @@ use std::path::Path;
 use blake3::hash;
 use num_bigint::BigUint;
 
-use crate::base::Result;
+use crate::base::{Result, SecretString};
 
 use super::{
     choose_rs_shard_bytes_for_protected_stream_len, parse_container,
     predicted_protected_stream_len, write_timelocked_artifact, LockArtifactRequest,
-    ParsedContainer, PayloadRegionEncodingParams, TimelockPayloadMaterial,
-    DEFAULT_LOCK_CHUNK_SIZE_BYTES, DEFAULT_RS_DATA_SHARDS, DEFAULT_RS_PARITY_SHARDS,
+    ParsedContainer, PasswordProtectionMetadata, PasswordProtectionParams,
+    PayloadRegionEncodingParams, TimelockPayloadMaterial, DEFAULT_LOCK_CHUNK_SIZE_BYTES,
+    DEFAULT_RS_DATA_SHARDS, DEFAULT_RS_PARITY_SHARDS,
 };
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,13 @@ pub(crate) struct SampleTimelockedFileBuilder {
     payload_region_params_override: Option<PayloadRegionEncodingParams>,
     file_key: [u8; 32],
     timelock_material: TimelockPayloadMaterial,
+    password_protection: Option<SamplePasswordProtection>,
+}
+
+#[derive(Debug, Clone)]
+struct SamplePasswordProtection {
+    passphrase: SecretString,
+    params: PasswordProtectionParams,
 }
 
 #[allow(dead_code)]
@@ -52,6 +60,7 @@ impl SampleTimelockedFileBuilder {
                 base_a: BigUint::from(5_u32),
                 wrapped_key: [9_u8; 32],
             },
+            password_protection: None,
         }
     }
 
@@ -119,6 +128,15 @@ impl SampleTimelockedFileBuilder {
         self
     }
 
+    pub(crate) fn password_protection(
+        mut self,
+        passphrase: SecretString,
+        params: PasswordProtectionParams,
+    ) -> Self {
+        self.password_protection = Some(SamplePasswordProtection { passphrase, params });
+        self
+    }
+
     pub(crate) fn write_to(&self, output_path: &Path) -> Result<()> {
         let mut writer = File::create(output_path)?;
         let protected_stream_len =
@@ -132,15 +150,33 @@ impl SampleTimelockedFileBuilder {
                         protected_stream_len,
                     ),
                 });
+        let timelock_mask = derive_timelock_mask(
+            &self.timelock_material.modulus_n,
+            &self.timelock_material.base_a,
+            self.iterations,
+        );
+        let (wrapped_key, password_protection) = match &self.password_protection {
+            Some(password_protection) => {
+                let wrapped_key = super::wrap_file_key_with_password(
+                    &self.file_key,
+                    &timelock_mask,
+                    &password_protection.passphrase,
+                    &password_protection.params,
+                )?;
+                let metadata = PasswordProtectionMetadata::timelock_plus_argon2id_v1(
+                    password_protection.params.clone(),
+                );
+                (wrapped_key, Some(metadata))
+            }
+            None => (
+                super::wrap_file_key_with_timelock_mask(&self.file_key, &timelock_mask),
+                None,
+            ),
+        };
         let timelock_material = TimelockPayloadMaterial {
             modulus_n: self.timelock_material.modulus_n.clone(),
             base_a: self.timelock_material.base_a.clone(),
-            wrapped_key: derive_wrapped_key(
-                &self.file_key,
-                &self.timelock_material.modulus_n,
-                &self.timelock_material.base_a,
-                self.iterations,
-            ),
+            wrapped_key,
         };
         write_timelocked_artifact(
             &mut writer,
@@ -158,6 +194,7 @@ impl SampleTimelockedFileBuilder {
                 payload_region_params,
                 key_bytes: self.file_key,
                 timelock_material,
+                password_protection,
             },
             None,
             None,
@@ -170,21 +207,12 @@ impl SampleTimelockedFileBuilder {
     }
 }
 
-fn derive_wrapped_key(
-    file_key: &[u8; 32],
-    modulus_n: &BigUint,
-    base_a: &BigUint,
-    iterations: u64,
-) -> [u8; 32] {
+fn derive_timelock_mask(modulus_n: &BigUint, base_a: &BigUint, iterations: u64) -> [u8; 32] {
     let mut value = base_a.clone();
     for _ in 0..iterations {
         value = (&value * &value) % modulus_n;
     }
 
     let digest = hash(&value.to_bytes_be());
-    let mut wrapped_key = [0_u8; 32];
-    for (index, byte) in wrapped_key.iter_mut().enumerate() {
-        *byte = file_key[index] ^ digest.as_bytes()[index];
-    }
-    wrapped_key
+    *digest.as_bytes()
 }

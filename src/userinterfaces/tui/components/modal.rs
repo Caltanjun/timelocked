@@ -6,10 +6,13 @@ use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::userinterfaces::tui::app_state::{
-    App, BrowserFileFilter, BrowserMode, BrowserTarget, FileBrowserState,
+    App, BrowserFileFilter, BrowserMode, BrowserTarget, FileBrowserState, PasswordPromptFocus,
+    PasswordPromptState,
 };
 
-use super::form::{button_span, key_hints_line, ActionKind};
+use super::form::{
+    button_span, helper_line, key_hints_line, label_width, line_with_secret_field, ActionKind,
+};
 use super::layout::centered_rect;
 use super::navigation::list_highlight_symbol;
 use super::theme::{accent_style, destructive_style, panel_block, plain_block, warning_style};
@@ -134,10 +137,162 @@ pub(crate) fn render_browser_modal(
     frame.render_widget(footer, chunks[2]);
 }
 
+pub(crate) fn render_password_prompt_modal(
+    frame: &mut Frame,
+    area: Rect,
+    state: &PasswordPromptState,
+    app: &App,
+) {
+    let modal_area = centered_rect(area, 70, 34);
+    frame.render_widget(Clear, modal_area);
+
+    let labels = ["Password"];
+    let label_width = label_width(&labels);
+    let remaining_attempts = state
+        .max_attempts
+        .saturating_sub(state.attempt)
+        .saturating_add(1);
+    let intro = if state.previous_attempt_failed {
+        let attempt_noun = if remaining_attempts == 1 {
+            "attempt"
+        } else {
+            "attempts"
+        };
+        format!("Password did not unlock this file. {remaining_attempts} {attempt_noun} remaining.")
+    } else {
+        "This file requires a password after the time-lock is solved.".to_string()
+    };
+
+    let lines = vec![
+        Line::from(intro),
+        helper_line(
+            "Enter the file password to continue unlocking.",
+            label_width,
+            app,
+        ),
+        Line::from(""),
+        line_with_secret_field(
+            "Password",
+            label_width,
+            state.password.secret_char_count(),
+            matches!(state.focus, PasswordPromptFocus::Password),
+            app,
+        ),
+        Line::from(""),
+        Line::from(vec![
+            button_span(
+                "Unlock",
+                ActionKind::Primary,
+                matches!(state.focus, PasswordPromptFocus::Unlock),
+                app,
+            ),
+            Span::raw("  "),
+            button_span(
+                "Cancel",
+                ActionKind::Secondary,
+                matches!(state.focus, PasswordPromptFocus::Cancel),
+                app,
+            ),
+        ]),
+        Line::from(""),
+        key_hints_line("Tab Focus   Enter Select   Esc Cancel", app),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(panel_block("Password Required", app))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, modal_area);
+}
+
 fn browser_filter_toggle_available(mode: BrowserMode, target: BrowserTarget) -> bool {
     matches!(mode, BrowserMode::File)
         && matches!(
             target,
             BrowserTarget::UnlockInput | BrowserTarget::InspectInput
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    use super::*;
+    use crate::userinterfaces::tui::state::SecretTextField;
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn prompt_state(
+        password: &str,
+        attempt: u8,
+        previous_attempt_failed: bool,
+    ) -> PasswordPromptState {
+        let (reply, _receiver) = mpsc::channel();
+        PasswordPromptState {
+            password: SecretTextField::new(password.to_string()),
+            focus: PasswordPromptFocus::Password,
+            attempt,
+            max_attempts: 3,
+            previous_attempt_failed,
+            reply,
+        }
+    }
+
+    #[test]
+    fn password_modal_masks_input() {
+        let app = App::new(false);
+        let state = prompt_state("raw-secret", 1, false);
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+
+        terminal
+            .draw(|frame| render_password_prompt_modal(frame, frame.area(), &state, &app))
+            .expect("draw password modal");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(!rendered.contains("raw-secret"));
+        assert!(rendered.contains("**********"));
+    }
+
+    #[test]
+    fn password_modal_retry_shows_remaining_attempts() {
+        let app = App::new(false);
+        let state = prompt_state("", 2, true);
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+
+        terminal
+            .draw(|frame| render_password_prompt_modal(frame, frame.area(), &state, &app))
+            .expect("draw password modal");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Password did not unlock this file. 2 attempts remaining."));
+    }
+
+    #[test]
+    fn password_modal_retry_pluralizes_single_remaining_attempt() {
+        let app = App::new(false);
+        let state = prompt_state("", 3, true);
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+
+        terminal
+            .draw(|frame| render_password_prompt_modal(frame, frame.area(), &state, &app))
+            .expect("draw password modal");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Password did not unlock this file. 1 attempt remaining."));
+    }
 }
